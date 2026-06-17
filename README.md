@@ -121,7 +121,7 @@ Backend Docker Compose는 별도 터미널에서 계속 떠 있어도 됩니다.
 
 현재 Qwen3.5-9B vLLM은 LLM/VLM 용도로 연결되어 있습니다. STT는 아직 모델 미확정이라 mock/developing 전사 상태입니다.
 
-Worker는 Agent pipeline 형태로 `입력 수집 -> STT mock -> 이미지/VLM 분석 -> 타임라인 정렬 -> 회의록 생성 -> 검증 저장` 순서를 수행합니다. LangGraph 외부 의존성 도입은 이후 고도화 항목입니다.
+Worker는 LangGraph `StateGraph` 기반 Agent pipeline으로 `입력 수집 -> STT mock -> 이미지/VLM 조건 분기 -> 타임라인 정렬 -> 회의록 생성 -> 검증 저장` 순서를 수행합니다.
 
 ## 6. 종료 / 정리
 
