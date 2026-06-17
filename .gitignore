@@ -1,0 +1,82 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Local runtime data
+CompanyBrain/
+logs/
+*.log
+*.pid
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Backend local data
+backend/.env
+backend/.env.*
+!backend/.env.example
+backend/.venv/
+backend/storage/**
+!backend/storage/
+!backend/storage/uploads/
+!backend/storage/uploads/.gitkeep
+!backend/storage/exports/
+!backend/storage/exports/.gitkeep
+*.db
+*.sqlite
+*.sqlite3
+
+# Node / Electron / Vite
+node_modules/
+frontend/node_modules/
+dist/
+dist-ssr/
+out/
+frontend/out/
+release/
+frontend/release/
+*.tsbuildinfo
+*.local
+
+# Root has no package.json; keep frontend/package-lock.json tracked instead.
+/package-lock.json
+
+# Local meeting media and exports
+*.webm
+*.mp4
+*.mkv
+*.wav
+*.m4a
+*.pdf.tmp
+
+# OS and editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+*.suo
+*.ntvs*
+*.njsproj
+*.sln

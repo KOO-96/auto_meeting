@@ -1,0 +1,73 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 210 18% 96%;
+  --foreground: 220 30% 10%;
+  --card: 0 0% 100%;
+  --card-foreground: 220 30% 10%;
+  --primary: 190 84% 28%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 35 18% 91%;
+  --secondary-foreground: 220 22% 16%;
+  --muted: 210 16% 91%;
+  --muted-foreground: 216 11% 38%;
+  --accent: 158 47% 34%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 0 66% 46%;
+  --destructive-foreground: 0 0% 100%;
+  --success: 151 50% 31%;
+  --success-foreground: 0 0% 100%;
+  --warning: 37 82% 42%;
+  --warning-foreground: 35 50% 12%;
+  --border: 214 16% 80%;
+  --input: 214 16% 78%;
+  --ring: 190 84% 28%;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 1024px;
+  min-height: 100vh;
+  color: hsl(var(--foreground));
+  background: hsl(var(--background));
+  font-family:
+    Inter, Pretendard, 'Apple SD Gothic Neo', system-ui, -apple-system,
+    BlinkMacSystemFont, sans-serif;
+  letter-spacing: 0;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  color: hsl(var(--primary-foreground));
+  background: hsl(var(--primary));
+}
+
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid hsl(var(--background));
+  border-radius: 999px;
+  background: hsl(214 14% 68%);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+#root {
+  min-height: 100vh;
+}
