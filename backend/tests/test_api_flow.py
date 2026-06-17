@@ -133,7 +133,16 @@ def test_meeting_metadata_and_processing_conflict() -> None:
     assert result_payload["meeting_id"] == meeting_id
     assert result_payload["one_line_summary"]
     assert "worker stub" not in result_payload["detailed_summary"].lower()
+    assert result_payload["validation_result"]["agent_engine"] == "langgraph"
     assert result_payload["validation_result"]["stt_status"] == "developing"
+    assert result_payload["validation_result"]["node_trace"] == [
+        "load_inputs",
+        "process_audio",
+        "skip_visuals",
+        "align_timeline",
+        "generate_minutes",
+        "validate_outputs",
+    ]
     assert result_payload["validation_result"]["input_summary"]["audio_files"] == 1
     assert result_payload["validation_result"]["input_summary"]["screen_files"] == 1
 

@@ -23,18 +23,26 @@ def run_meeting_pipeline(meeting_id: int) -> None:
         writer = ResultWriter(db)
 
         try:
-            writer.update_progress(meeting, job, ProcessingJobStatus.processing, 1)
-            agent = MeetingAgent(meeting)
-            agent.load_inputs()
-            writer.update_progress(meeting, job, ProcessingJobStatus.processing, 2)
-            agent.process_audio()
-            writer.update_progress(meeting, job, ProcessingJobStatus.processing, 3)
-            agent.process_visuals()
-            writer.update_progress(meeting, job, ProcessingJobStatus.processing, 4)
-            agent.align_timeline()
-            agent.generate_minutes()
-            writer.update_progress(meeting, job, ProcessingJobStatus.validating, 5)
-            agent.validate_outputs()
+            def update_node_progress(node_name: str) -> None:
+                step_by_node = {
+                    "load_inputs": 1,
+                    "process_audio": 2,
+                    "process_visuals": 3,
+                    "skip_visuals": 3,
+                    "align_timeline": 3,
+                    "generate_minutes": 4,
+                    "validate_outputs": 5,
+                }
+                step = step_by_node[node_name]
+                status = (
+                    ProcessingJobStatus.validating
+                    if node_name == "validate_outputs"
+                    else ProcessingJobStatus.processing
+                )
+                writer.update_progress(meeting, job, status, step)
+
+            agent = MeetingAgent(meeting, on_node_complete=update_node_progress)
+            agent.run()
             writer.save_transcript(
                 meeting.id,
                 agent.state.transcript["content"],

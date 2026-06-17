@@ -1,4 +1,8 @@
 from dataclasses import dataclass, field
+from collections.abc import Callable
+from typing import TypedDict
+
+from langgraph.graph import END, START, StateGraph
 
 from app.models.enums import FileType
 from app.models.meeting import Meeting
@@ -39,6 +43,24 @@ class MeetingAgentState:
     visual_summary: str = ""
     minutes: dict = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    node_trace: list[str] = field(default_factory=list)
+
+
+class AgentGraphState(TypedDict, total=False):
+    meeting_id: int
+    title: str
+    audio_files: list[AgentInputFile]
+    screen_files: list[AgentInputFile]
+    image_files: list[AgentInputFile]
+    document_files: list[AgentInputFile]
+    memo_texts: list[str]
+    transcript: dict
+    transcript_for_minutes: str
+    visual_results: list[VisualAgentResult]
+    visual_summary: str
+    minutes: dict
+    warnings: list[str]
+    node_trace: list[str]
 
 
 def path_for_file(file: MeetingFile) -> str | None:
@@ -46,21 +68,79 @@ def path_for_file(file: MeetingFile) -> str | None:
 
 
 class MeetingAgent:
-    """Deterministic MVP agent graph for meeting processing.
+    """LangGraph-backed meeting processing agent.
 
-    STT remains a mock/developing node, while memo/image/model routing runs through
-    explicit agent steps so it can be replaced by LangGraph later without changing
-    the RQ/DB boundary.
+    The RQ worker still owns DB status/result persistence, while LangGraph owns
+    deterministic orchestration, branching, and validation state.
     """
 
-    def __init__(self, meeting: Meeting):
+    def __init__(
+        self,
+        meeting: Meeting,
+        on_node_complete: Callable[[str], None] | None = None,
+    ):
         self.meeting = meeting
-        self.state = MeetingAgentState(
-            meeting_id=meeting.id,
-            title=meeting.title,
-        )
+        self.on_node_complete = on_node_complete
+        self.state = self.to_dataclass(self.initial_state())
+        self.graph = self.build_graph()
 
-    def load_inputs(self) -> MeetingAgentState:
+    def run(self) -> MeetingAgentState:
+        result = self.graph.invoke(self.initial_state())
+        self.state = self.to_dataclass(result)
+        return self.state
+
+    def initial_state(self) -> AgentGraphState:
+        return {
+            "meeting_id": self.meeting.id,
+            "title": self.meeting.title,
+            "audio_files": [],
+            "screen_files": [],
+            "image_files": [],
+            "document_files": [],
+            "memo_texts": [],
+            "transcript": {},
+            "transcript_for_minutes": "",
+            "visual_results": [],
+            "visual_summary": "",
+            "minutes": {},
+            "warnings": [],
+            "node_trace": [],
+        }
+
+    def build_graph(self):
+        graph = StateGraph(AgentGraphState)
+        graph.add_node("load_inputs", self.load_inputs)
+        graph.add_node("process_audio", self.process_audio)
+        graph.add_node("process_visuals", self.process_visuals)
+        graph.add_node("skip_visuals", self.skip_visuals)
+        graph.add_node("align_timeline", self.align_timeline)
+        graph.add_node("generate_minutes", self.generate_minutes)
+        graph.add_node("validate_outputs", self.validate_outputs)
+
+        graph.add_edge(START, "load_inputs")
+        graph.add_edge("load_inputs", "process_audio")
+        graph.add_conditional_edges(
+            "process_audio",
+            self.route_visual_processing,
+            {
+                "visuals": "process_visuals",
+                "skip_visuals": "skip_visuals",
+            },
+        )
+        graph.add_edge("process_visuals", "align_timeline")
+        graph.add_edge("skip_visuals", "align_timeline")
+        graph.add_edge("align_timeline", "generate_minutes")
+        graph.add_edge("generate_minutes", "validate_outputs")
+        graph.add_edge("validate_outputs", END)
+
+        return graph.compile()
+
+    def load_inputs(self, state: AgentGraphState) -> AgentGraphState:
+        audio_files: list[AgentInputFile] = []
+        screen_files: list[AgentInputFile] = []
+        image_files: list[AgentInputFile] = []
+        document_files: list[AgentInputFile] = []
+
         for file in self.meeting.files:
             input_file = AgentInputFile(
                 id=file.id,
@@ -71,54 +151,80 @@ class MeetingAgent:
             )
 
             if file.file_type == FileType.audio:
-                self.state.audio_files.append(input_file)
+                audio_files.append(input_file)
             elif file.file_type == FileType.screen_recording:
-                self.state.screen_files.append(input_file)
+                screen_files.append(input_file)
             elif self.is_image_file(file):
-                self.state.image_files.append(input_file)
+                image_files.append(input_file)
             elif file.file_type in {FileType.document, FileType.attachment}:
-                self.state.document_files.append(input_file)
+                document_files.append(input_file)
 
-        self.state.memo_texts = [memo.memo for memo in self.meeting.memos if memo.memo]
+        memo_texts = [memo.memo for memo in self.meeting.memos if memo.memo]
 
         if self.meeting.additional_memo:
-            self.state.memo_texts.insert(0, self.meeting.additional_memo)
+            memo_texts.insert(0, self.meeting.additional_memo)
 
-        return self.state
+        return {
+            "audio_files": audio_files,
+            "screen_files": screen_files,
+            "image_files": image_files,
+            "document_files": document_files,
+            "memo_texts": memo_texts,
+            "node_trace": self.complete_node(state, "load_inputs"),
+        }
 
-    def process_audio(self) -> MeetingAgentState:
-        audio_path = self.first_path(self.state.audio_files) or self.first_path(
-            self.state.screen_files,
+    def process_audio(self, state: AgentGraphState) -> AgentGraphState:
+        audio_path = self.first_path(state.get("audio_files", [])) or self.first_path(
+            state.get("screen_files", []),
         )
         transcript = transcribe_audio(audio_path)
-        self.state.transcript = transcript
 
         if transcript.get("status") in {"mock", "developing"}:
-            self.state.warnings.append(
-                "STT는 개발 중입니다. mock 전사 문장은 회의 요약 입력에서 제외했습니다.",
-            )
-            self.state.transcript_for_minutes = ""
-            return self.state
+            return {
+                "transcript": transcript,
+                "transcript_for_minutes": "",
+                "warnings": [
+                    *state.get("warnings", []),
+                    "STT는 개발 중입니다. mock 전사 문장은 회의 요약 입력에서 제외했습니다.",
+                ],
+                "node_trace": self.complete_node(state, "process_audio"),
+            }
 
-        self.state.transcript_for_minutes = str(transcript.get("content") or "")
-        return self.state
+        return {
+            "transcript": transcript,
+            "transcript_for_minutes": str(transcript.get("content") or ""),
+            "node_trace": self.complete_node(state, "process_audio"),
+        }
 
-    def process_visuals(self) -> MeetingAgentState:
-        if not self.state.image_files:
-            visual = fallback_visual(reason="image_input_missing")
-            self.state.visual_results.append(
+    def route_visual_processing(self, state: AgentGraphState) -> str:
+        if state.get("image_files"):
+            return "visuals"
+        return "skip_visuals"
+
+    def skip_visuals(self, state: AgentGraphState) -> AgentGraphState:
+        visual = fallback_visual(reason="image_input_missing")
+        return {
+            "visual_results": [
                 VisualAgentResult(
                     payload=visual,
                     source_file_id=None,
                     image_path=None,
                 ),
-            )
-            self.state.visual_summary = visual["summary"]
-            return self.state
+            ],
+            "visual_summary": visual["summary"],
+            "warnings": [
+                *state.get("warnings", []),
+                "이미지 입력이 없어 VLM 분석 노드는 건너뛰었습니다.",
+            ],
+            "node_trace": self.complete_node(state, "skip_visuals"),
+        }
 
-        for image_file in self.state.image_files:
+    def process_visuals(self, state: AgentGraphState) -> AgentGraphState:
+        visual_results: list[VisualAgentResult] = []
+
+        for image_file in state.get("image_files", []):
             visual = analyze_image(image_file.path)
-            self.state.visual_results.append(
+            visual_results.append(
                 VisualAgentResult(
                     payload=visual,
                     source_file_id=image_file.id,
@@ -126,68 +232,113 @@ class MeetingAgent:
                 ),
             )
 
-        self.state.visual_summary = "\n".join(
+        visual_summary = "\n".join(
             result.payload.get("summary", "")
-            for result in self.state.visual_results
+            for result in visual_results
             if result.payload.get("summary")
         )
-        return self.state
+        return {
+            "visual_results": visual_results,
+            "visual_summary": visual_summary,
+            "node_trace": self.complete_node(state, "process_visuals"),
+        }
 
-    def align_timeline(self) -> MeetingAgentState:
+    def align_timeline(self, state: AgentGraphState) -> AgentGraphState:
         context_parts: list[str] = []
+        memo_texts = state.get("memo_texts", [])
 
-        if self.state.memo_texts:
+        if memo_texts:
             context_parts.append(
-                "사용자 메모:\n"
-                + "\n".join(f"- {memo}" for memo in self.state.memo_texts),
+                "사용자 메모:\n" + "\n".join(f"- {memo}" for memo in memo_texts),
             )
 
         visual_keywords = [
             keyword
-            for result in self.state.visual_results
+            for result in state.get("visual_results", [])
             for keyword in result.payload.get("keywords", [])
         ]
         if visual_keywords:
             context_parts.append("시각 자료 키워드: " + ", ".join(sorted(set(visual_keywords))))
 
-        if self.state.document_files:
+        document_files = state.get("document_files", [])
+        if document_files:
             document_names = [
-                file.file_name or file.path or f"file:{file.id}"
-                for file in self.state.document_files
+                file.file_name or file.path or f"file:{file.id}" for file in document_files
             ]
             context_parts.append("첨부 문서: " + ", ".join(document_names))
 
+        visual_summary = state.get("visual_summary", "")
         if context_parts:
             aligned_context = "\n\n".join(context_parts)
-            self.state.visual_summary = "\n\n".join(
-                item for item in [self.state.visual_summary, aligned_context] if item
+            visual_summary = "\n\n".join(
+                item for item in [visual_summary, aligned_context] if item
             )
 
-        return self.state
-
-    def generate_minutes(self) -> MeetingAgentState:
-        self.state.minutes = generate_minutes(
-            self.state.title,
-            self.state.transcript_for_minutes,
-            len(self.state.memo_texts),
-            memo_texts=self.state.memo_texts,
-            visual_summary=self.state.visual_summary,
-            transcript_status=str(self.state.transcript.get("status") or "ready"),
-        )
-        return self.state
-
-    def validate_outputs(self) -> MeetingAgentState:
-        validation = self.state.minutes.setdefault("validation_result", {})
-        validation["agent_warnings"] = self.state.warnings
-        validation["stt_status"] = self.state.transcript.get("status", "unknown")
-        validation["input_summary"] = {
-            "audio_files": len(self.state.audio_files),
-            "screen_files": len(self.state.screen_files),
-            "image_files": len(self.state.image_files),
-            "document_files": len(self.state.document_files),
-            "memo_count": len(self.state.memo_texts),
+        return {
+            "visual_summary": visual_summary,
+            "node_trace": self.complete_node(state, "align_timeline"),
         }
-        return self.state
+
+    def generate_minutes(self, state: AgentGraphState) -> AgentGraphState:
+        transcript = state.get("transcript", {})
+        minutes = generate_minutes(
+            state["title"],
+            state.get("transcript_for_minutes", ""),
+            len(state.get("memo_texts", [])),
+            memo_texts=state.get("memo_texts", []),
+            visual_summary=state.get("visual_summary", ""),
+            transcript_status=str(transcript.get("status") or "ready"),
+        )
+        return {
+            "minutes": minutes,
+            "node_trace": self.complete_node(state, "generate_minutes"),
+        }
+
+    def validate_outputs(self, state: AgentGraphState) -> AgentGraphState:
+        minutes = dict(state.get("minutes", {}))
+        validation = dict(minutes.setdefault("validation_result", {}))
+        node_trace = self.complete_node(state, "validate_outputs")
+        validation["agent_engine"] = "langgraph"
+        validation["agent_warnings"] = state.get("warnings", [])
+        validation["stt_status"] = state.get("transcript", {}).get("status", "unknown")
+        validation["node_trace"] = node_trace
+        validation["input_summary"] = {
+            "audio_files": len(state.get("audio_files", [])),
+            "screen_files": len(state.get("screen_files", [])),
+            "image_files": len(state.get("image_files", [])),
+            "document_files": len(state.get("document_files", [])),
+            "memo_count": len(state.get("memo_texts", [])),
+        }
+        minutes["validation_result"] = validation
+
+        return {
+            "minutes": minutes,
+            "node_trace": node_trace,
+        }
+
+    @staticmethod
+    def to_dataclass(state: AgentGraphState) -> MeetingAgentState:
+        return MeetingAgentState(
+            meeting_id=state["meeting_id"],
+            title=state["title"],
+            audio_files=state.get("audio_files", []),
+            screen_files=state.get("screen_files", []),
+            image_files=state.get("image_files", []),
+            document_files=state.get("document_files", []),
+            memo_texts=state.get("memo_texts", []),
+            transcript=state.get("transcript", {}),
+            transcript_for_minutes=state.get("transcript_for_minutes", ""),
+            visual_results=state.get("visual_results", []),
+            visual_summary=state.get("visual_summary", ""),
+            minutes=state.get("minutes", {}),
+            warnings=state.get("warnings", []),
+            node_trace=state.get("node_trace", []),
+        )
+
+    def complete_node(self, state: AgentGraphState, node_name: str) -> list[str]:
+        if self.on_node_complete:
+            self.on_node_complete(node_name)
+        return [*state.get("node_trace", []), node_name]
 
     @staticmethod
     def first_path(files: list[AgentInputFile]) -> str | None:

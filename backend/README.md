@@ -111,7 +111,7 @@ ruff check .
 - 관리자 수동 파일 업로드/다운로드
 - 처리 요청
 - queued 상태 중복 처리 요청 409 방지
-- Worker Agent pipeline 처리 완료
+- LangGraph 기반 Worker Agent pipeline 처리 완료
 - 회의 결과 조회
 - Markdown Export 생성/다운로드
 - vLLM LLM/VLM endpoint 연동 smoke 검증
