@@ -1,6 +1,7 @@
 import logging
 from typing import Any
 
+from app.models.enums import MeetingType
 from app.worker.openai_compatible import (
     ModelClientError,
     json_chat_completion,
@@ -8,6 +9,8 @@ from app.worker.openai_compatible import (
 )
 
 logger = logging.getLogger(__name__)
+
+MEETING_TYPES = {meeting_type.value for meeting_type in MeetingType}
 
 
 def fallback_minutes(
@@ -17,12 +20,13 @@ def fallback_minutes(
     transcript_status: str = "ready",
 ) -> dict:
     stt_note = (
-        " STT가 개발 중이므로 음성 전사는 mock 처리되었고, 메모와 시각 자료 중심으로 정리했습니다."
-        if transcript_status in {"mock", "developing"}
+        " 음성 전사를 사용할 수 없어(개발 중/오류) 메모와 시각 자료 중심으로 정리했습니다."
+        if transcript_status in {"mock", "developing", "error"}
         else ""
     )
 
     return {
+        "meeting_type": "general_meeting",
         "one_line_summary": f"{title} 회의록이 생성되었습니다.",
         "detailed_summary": (
             "현재 사용 가능한 회의 입력을 기반으로 회의록 초안을 생성했습니다. "
@@ -72,6 +76,7 @@ def generate_minutes(
     memo_texts: list[str] | None = None,
     visual_summary: str | None = None,
     transcript_status: str = "ready",
+    timeline_text: str | None = None,
 ) -> dict:
     if not model_enabled():
         return fallback_minutes(title, transcript, memo_count, transcript_status)
@@ -94,6 +99,7 @@ def generate_minutes(
                         memo_texts or [],
                         visual_summary,
                         transcript_status,
+                        timeline_text,
                     ),
                 },
             ],
@@ -115,12 +121,13 @@ def build_prompt(
     memo_texts: list[str],
     visual_summary: str | None,
     transcript_status: str,
+    timeline_text: str | None = None,
 ) -> str:
     joined_memos = "\n".join(f"- {memo}" for memo in memo_texts) or "(none)"
     transcript_instruction = (
-        "STT는 개발 중/mock 상태입니다. 아래 전사 텍스트가 비어 있거나 안내문이면 "
-        "회의 내용으로 간주하지 말고 사용자 메모와 화면/이미지 분석만 근거로 작성하세요."
-        if transcript_status in {"mock", "developing"}
+        "음성 전사를 사용할 수 없습니다(개발 중/mock 또는 오류). 아래 전사 텍스트가 비어 있거나 "
+        "안내문이면 회의 내용으로 간주하지 말고 사용자 메모와 화면/이미지 분석만 근거로 작성하세요."
+        if transcript_status in {"mock", "developing", "error"}
         else "전사 텍스트를 주요 근거로 사용하세요."
     )
     return f"""다음 회의 입력을 기반으로 구조화 회의록 JSON을 생성하세요.
@@ -133,6 +140,7 @@ def build_prompt(
 
 JSON schema:
 {{
+  "meeting_type": "general_meeting|task_assignment|project_planning|wbs_planning|decision_meeting|retrospective|hr_sensitive|architecture_review|incident_review|unknown",
   "one_line_summary": "string",
   "detailed_summary": "string",
   "keywords": ["string"],
@@ -174,6 +182,9 @@ JSON schema:
 사용자 메모:
 {joined_memos[:6000]}
 
+시간순 타임라인(발화/메모):
+{(timeline_text or "(none)")[:8000]}
+
 화면/이미지 분석:
 {visual_summary or "(none)"}
 """
@@ -188,6 +199,8 @@ def normalize_minutes(
 ) -> dict:
     fallback = fallback_minutes(title, transcript, memo_count, transcript_status)
     normalized = {
+        "meeting_type": enum_or_none(payload.get("meeting_type"), MEETING_TYPES)
+        or "general_meeting",
         "one_line_summary": string_value(
             payload.get("one_line_summary"),
             fallback["one_line_summary"],

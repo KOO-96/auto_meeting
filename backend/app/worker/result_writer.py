@@ -87,12 +87,20 @@ class ResultWriter:
 
     def save_analysis(self, meeting_id: int, payload: dict) -> None:
         # Idempotency is handled up-front by reset_derived_results(); this is a
-        # pure insert.
+        # pure insert. meeting_type comes from the model output (falls back to
+        # general_meeting on an unknown/missing value).
+        data = dict(payload)
+        raw_type = data.pop("meeting_type", None)
+        try:
+            meeting_type = MeetingType(raw_type) if raw_type else MeetingType.general_meeting
+        except ValueError:
+            meeting_type = MeetingType.general_meeting
+
         self.db.add(
             MeetingAnalysis(
                 meeting_id=meeting_id,
-                meeting_type=MeetingType.general_meeting,
-                **payload,
+                meeting_type=meeting_type,
+                **data,
             )
         )
 

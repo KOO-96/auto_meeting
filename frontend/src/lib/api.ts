@@ -112,9 +112,57 @@ async function apiBaseUrl(): Promise<string> {
   }
 }
 
+// De-duplicate concurrent refreshes: many requests may 401 at once, but only
+// one refresh call should hit the backend; the rest await the same result.
+let refreshInFlight: Promise<boolean> | null = null
+
+async function refreshAccessToken(): Promise<boolean> {
+  const { refreshToken } = useAuthStore.getState()
+  if (!refreshToken) {
+    return false
+  }
+
+  if (!refreshInFlight) {
+    refreshInFlight = (async () => {
+      try {
+        const baseUrl = await apiBaseUrl()
+        const response = await fetch(`${baseUrl}/api/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        })
+        if (!response.ok) {
+          useAuthStore.getState().logout()
+          return false
+        }
+        const data = (await response.json()) as {
+          access_token: string
+          refresh_token: string
+          user: BackendUser
+        }
+        useAuthStore.getState().setAuth({
+          user: mapUser(data.user),
+          accessToken: data.access_token,
+          refreshToken: data.refresh_token,
+        })
+        return true
+      } catch {
+        useAuthStore.getState().logout()
+        return false
+      }
+    })()
+    void refreshInFlight.finally(() => {
+      refreshInFlight = null
+    })
+  }
+
+  return refreshInFlight
+}
+
 async function request<T>(
   path: string,
   options: RequestInit = {},
+  allowRefresh = true,
 ): Promise<T> {
   const baseUrl = await apiBaseUrl()
   const token = useAuthStore.getState().accessToken
@@ -134,6 +182,14 @@ async function request<T>(
   })
 
   if (response.status === 401) {
+    // Try a one-time silent refresh, then replay the original request. Skip for
+    // auth endpoints to avoid recursion.
+    if (allowRefresh && !path.startsWith('/api/auth/')) {
+      const refreshed = await refreshAccessToken()
+      if (refreshed) {
+        return request<T>(path, options, false)
+      }
+    }
     useAuthStore.getState().logout()
   }
 

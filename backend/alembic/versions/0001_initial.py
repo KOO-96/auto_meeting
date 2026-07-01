@@ -270,3 +270,20 @@ def downgrade() -> None:
     op.drop_table('users')
     # ### end Alembic commands ###
 
+    # PostgreSQL creates a named type for each Enum column; drop_table does not
+    # remove them, so drop explicitly to keep downgrade fully reversible.
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        for enum_name in (
+            "userrole",
+            "meetingstatus",
+            "roleinmeeting",
+            "filetype",
+            "processingjobstatus",
+            "transcripttype",
+            "imagetype",
+            "meetingtype",
+            "exporttype",
+        ):
+            op.execute(f"DROP TYPE IF EXISTS {enum_name}")
+

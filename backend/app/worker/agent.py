@@ -6,6 +6,7 @@ from typing import TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from app.models.enums import FileType
+from app.worker.frame_sampler import sample_frames
 from app.worker.llm_client import generate_minutes
 from app.worker.stt_client import transcribe_audio
 from app.worker.vlm_client import analyze_image, fallback_visual
@@ -40,6 +41,8 @@ class MeetingSnapshot:
     title: str
     input_files: list[AgentInputFile]
     memo_texts: list[str]
+    # Timeline memos carry their in-meeting offset for chronological alignment.
+    timed_memos: list[dict]
 
 
 @dataclass
@@ -62,6 +65,7 @@ class MeetingAgentState:
     transcript_for_minutes: str = ""
     visual_results: list[VisualAgentResult] = field(default_factory=list)
     visual_summary: str = ""
+    timeline_text: str = ""
     minutes: dict = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     node_trace: list[str] = field(default_factory=list)
@@ -79,6 +83,7 @@ class AgentGraphState(TypedDict, total=False):
     transcript_for_minutes: str
     visual_results: list[VisualAgentResult]
     visual_summary: str
+    timeline_text: str
     minutes: dict
     warnings: list[str]
     node_trace: list[str]
@@ -120,6 +125,7 @@ class MeetingAgent:
             "transcript_for_minutes": "",
             "visual_results": [],
             "visual_summary": "",
+            "timeline_text": "",
             "minutes": {},
             "warnings": [],
             "node_trace": [],
@@ -183,15 +189,18 @@ class MeetingAgent:
             state.get("screen_files", []),
         )
         transcript = transcribe_audio(audio_path)
+        status = transcript.get("status")
 
-        if transcript.get("status") in {"mock", "developing"}:
+        if status in {"mock", "developing", "error"}:
+            warning = (
+                "음성 전사 중 오류가 발생해 전사 텍스트는 회의 요약 입력에서 제외했습니다."
+                if status == "error"
+                else "STT는 개발 중입니다. mock 전사 문장은 회의 요약 입력에서 제외했습니다."
+            )
             return {
                 "transcript": transcript,
                 "transcript_for_minutes": "",
-                "warnings": [
-                    *state.get("warnings", []),
-                    "STT는 개발 중입니다. mock 전사 문장은 회의 요약 입력에서 제외했습니다.",
-                ],
+                "warnings": [*state.get("warnings", []), warning],
                 "node_trace": self.complete_node(state, "process_audio"),
             }
 
@@ -202,7 +211,7 @@ class MeetingAgent:
         }
 
     def route_visual_processing(self, state: AgentGraphState) -> str:
-        if state.get("image_files"):
+        if state.get("image_files") or state.get("screen_files"):
             return "visuals"
         return "skip_visuals"
 
@@ -247,6 +256,30 @@ class MeetingAgent:
                 ),
             )
 
+        # Screen recordings are video: sample still frames (best-effort) and
+        # analyze each frame with the VLM.
+        for screen_file in state.get("screen_files", []):
+            with sample_frames(screen_file.path) as frames:
+                if not frames:
+                    continue
+                for frame_path in frames:
+                    try:
+                        visual = analyze_image(frame_path)
+                    except Exception as error:  # noqa: BLE001 - isolate per-frame failure.
+                        logger.warning(
+                            "Screen frame analysis failed for file %s: %s",
+                            screen_file.id,
+                            error,
+                        )
+                        continue
+                    visual_results.append(
+                        VisualAgentResult(
+                            payload=visual,
+                            source_file_id=screen_file.id,
+                            image_path=screen_file.path,
+                        ),
+                    )
+
         visual_summary = "\n".join(
             result.payload.get("summary", "")
             for result in visual_results
@@ -260,14 +293,32 @@ class MeetingAgent:
         }
 
     def align_timeline(self, state: AgentGraphState) -> AgentGraphState:
+        # Build a real chronological timeline by merging transcript segments
+        # (only when a real transcript exists) and timestamped user memos.
+        events: list[tuple[int, str, str]] = []
+
+        transcript = state.get("transcript", {})
+        if transcript.get("status") == "ready":
+            for segment in transcript.get("segments") or []:
+                start_ms = segment.get("start_ms")
+                text = str(segment.get("text") or "").strip()
+                if text and start_ms is not None:
+                    events.append((int(start_ms), "발화", text))
+
+        for memo in self.snapshot.timed_memos:
+            timestamp_ms = memo.get("timestamp_ms")
+            text = str(memo.get("text") or "").strip()
+            if text and timestamp_ms is not None:
+                events.append((int(timestamp_ms), "메모", text))
+
+        events.sort(key=lambda event: event[0])
+        timeline_text = "\n".join(
+            f"[{self._format_ms(ms)}] ({kind}) {text}" for ms, kind, text in events
+        )
+
+        # Non-temporal context (visual keywords, attached documents) still feeds
+        # the minutes prompt alongside the timeline.
         context_parts: list[str] = []
-        memo_texts = state.get("memo_texts", [])
-
-        if memo_texts:
-            context_parts.append(
-                "사용자 메모:\n" + "\n".join(f"- {memo}" for memo in memo_texts),
-            )
-
         visual_keywords = [
             keyword
             for result in state.get("visual_results", [])
@@ -292,8 +343,14 @@ class MeetingAgent:
 
         return {
             "visual_summary": visual_summary,
+            "timeline_text": timeline_text,
             "node_trace": self.complete_node(state, "align_timeline"),
         }
+
+    @staticmethod
+    def _format_ms(ms: int) -> str:
+        total_seconds = max(0, int(ms) // 1000)
+        return f"{total_seconds // 60:02d}:{total_seconds % 60:02d}"
 
     def generate_minutes(self, state: AgentGraphState) -> AgentGraphState:
         transcript = state.get("transcript", {})
@@ -304,6 +361,7 @@ class MeetingAgent:
             memo_texts=state.get("memo_texts", []),
             visual_summary=state.get("visual_summary", ""),
             transcript_status=str(transcript.get("status") or "ready"),
+            timeline_text=state.get("timeline_text", ""),
         )
         return {
             "minutes": minutes,
@@ -346,6 +404,7 @@ class MeetingAgent:
             transcript_for_minutes=state.get("transcript_for_minutes", ""),
             visual_results=state.get("visual_results", []),
             visual_summary=state.get("visual_summary", ""),
+            timeline_text=state.get("timeline_text", ""),
             minutes=state.get("minutes", {}),
             warnings=state.get("warnings", []),
             node_trace=state.get("node_trace", []),

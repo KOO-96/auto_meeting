@@ -6,6 +6,8 @@ os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-pytest-0123456789")
 os.environ.setdefault("AI_WORKER_ENABLED", "false")
 os.environ.setdefault("UPLOAD_DIR", "storage/test_uploads")
 os.environ.setdefault("EXPORT_DIR", "storage/test_exports")
+# Keep the shared-IP login limiter from throttling the suite's many logins.
+os.environ.setdefault("LOGIN_RATE_LIMIT_MAX_ATTEMPTS", "1000")
 
 from datetime import datetime, timedelta, timezone  # noqa: E402
 
@@ -46,6 +48,30 @@ def auth_headers(client: TestClient) -> dict[str, str]:
     assert response.status_code == 200, response.text
     token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
+
+
+def _create_user(email: str, role: str = "member", password: str = "password123") -> int:
+    from app.core.security import hash_password
+    from app.models.user import User
+
+    with SessionLocal() as db:
+        user = User(
+            name=email,
+            email=email,
+            password_hash=hash_password(password),
+            role=role,
+            is_active=True,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        return user.id
+
+
+def login_as(client: TestClient, email: str, password: str) -> dict[str, str]:
+    response = client.post("/api/auth/login", json={"email": email, "password": password})
+    assert response.status_code == 200, response.text
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
 def _create_processable_meeting(client: TestClient, headers: dict[str, str], title: str) -> int:
@@ -176,10 +202,12 @@ def test_meeting_metadata_and_processing_conflict() -> None:
     assert "worker stub" not in result_payload["detailed_summary"].lower()
     assert result_payload["validation_result"]["agent_engine"] == "langgraph"
     assert result_payload["validation_result"]["stt_status"] == "developing"
+    # A screen recording is present, so the visual branch runs (frame sampling
+    # is best-effort and yields nothing for the nonexistent test path).
     assert result_payload["validation_result"]["node_trace"] == [
         "load_inputs",
         "process_audio",
-        "skip_visuals",
+        "process_visuals",
         "align_timeline",
         "generate_minutes",
         "validate_outputs",
@@ -263,3 +291,142 @@ def test_login_rate_limiter_unit() -> None:
     # Redis is unavailable in tests, so this exercises the in-memory fallback.
     allowed = [limiter.allow("unit-test-key", max_attempts=3, window_seconds=60) for _ in range(4)]
     assert allowed == [True, True, True, False]
+
+
+def test_non_admin_cannot_manage_projects() -> None:
+    client = TestClient(app)
+    _create_user("member1@company.local", role="member")
+    member_headers = login_as(client, "member1@company.local", "password123")
+    admin_headers = auth_headers(client)
+
+    denied = client.post("/api/projects", json={"name": "P"}, headers=member_headers)
+    assert denied.status_code == 403, denied.text
+
+    created = client.post("/api/projects", json={"name": "P"}, headers=admin_headers)
+    assert created.status_code == 200, created.text
+    project_id = created.json()["id"]
+
+    listed = client.get("/api/projects", headers=member_headers)
+    assert listed.status_code == 200
+    assert any(p["id"] == project_id for p in listed.json())
+
+    delete_denied = client.delete(f"/api/projects/{project_id}", headers=member_headers)
+    assert delete_denied.status_code == 403
+
+
+def test_memo_author_is_forced_to_caller() -> None:
+    client = TestClient(app)
+    headers = auth_headers(client)
+    meeting_id = _create_processable_meeting(client, headers, "메모 작성자 회의")
+
+    created = client.post(
+        f"/api/meetings/{meeting_id}/memos",
+        json={"timestamp_ms": 1000, "memo": "테스트 메모", "created_by": 99999},
+        headers=headers,
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["author_id"] != 99999
+
+
+def test_status_of_missing_meeting_returns_404() -> None:
+    client = TestClient(app)
+    headers = auth_headers(client)
+    response = client.get("/api/meetings/999999/status", headers=headers)
+    assert response.status_code == 404
+
+
+def test_process_requires_input() -> None:
+    client = TestClient(app)
+    headers = auth_headers(client)
+    meeting = client.post(
+        "/api/meetings",
+        json={
+            "title": "입력 없는 회의",
+            "meeting_date": "2026-06-16",
+            "participant_ids": [],
+            "participants_only": True,
+        },
+        headers=headers,
+    )
+    meeting_id = meeting.json()["meeting_id"]
+    response = client.post(f"/api/meetings/{meeting_id}/process", headers=headers)
+    assert response.status_code == 400
+
+
+def test_reprocess_completed_requires_retry() -> None:
+    client = TestClient(app)
+    headers = auth_headers(client)
+    meeting_id = _create_processable_meeting(client, headers, "재처리 회의")
+
+    client.post(f"/api/meetings/{meeting_id}/process", headers=headers)
+    run_meeting_pipeline(meeting_id)
+
+    again = client.post(f"/api/meetings/{meeting_id}/process", headers=headers)
+    assert again.status_code == 409
+
+    retried = client.post(f"/api/meetings/{meeting_id}/retry", headers=headers)
+    assert retried.status_code == 200
+    assert retried.json()["status"] == "queued"
+
+
+def test_login_rate_limit_returns_429() -> None:
+    from unittest.mock import patch
+
+    client = TestClient(app)
+    with patch("app.core.rate_limit._limiter.allow", return_value=False):
+        response = client.post(
+            "/api/auth/login",
+            json={"email": "admin@company.local", "password": "password"},
+        )
+    assert response.status_code == 429
+
+
+def test_change_password_flow_revokes_sessions() -> None:
+    client = TestClient(app)
+    _create_user("rotate@company.local", role="member", password="password123")
+    login = client.post(
+        "/api/auth/login",
+        json={"email": "rotate@company.local", "password": "password123"},
+    )
+    assert login.status_code == 200
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    old_refresh = login.json()["refresh_token"]
+
+    changed = client.post(
+        "/api/auth/change-password",
+        json={"current_password": "password123", "new_password": "newpassword456"},
+        headers=headers,
+    )
+    assert changed.status_code == 200
+    assert changed.json()["must_change_password"] is False
+
+    reused = client.post("/api/auth/refresh", json={"refresh_token": old_refresh})
+    assert reused.status_code == 400
+
+    relogin = client.post(
+        "/api/auth/login",
+        json={"email": "rotate@company.local", "password": "newpassword456"},
+    )
+    assert relogin.status_code == 200
+
+
+def test_stt_normalization_parses_verbose_json() -> None:
+    from app.worker.stt_client import _normalize_transcription
+
+    body = {
+        "text": "안녕하세요 회의를 시작합니다",
+        "segments": [
+            {"start": 0.0, "end": 2.5, "text": "안녕하세요"},
+            {"start": 2.5, "end": 5.0, "text": "회의를 시작합니다"},
+        ],
+    }
+    result = _normalize_transcription(body, "/tmp/audio.wav")
+    assert result["status"] == "ready"
+    assert result["is_mock"] is False
+    assert result["content"] == "안녕하세요 회의를 시작합니다"
+    assert result["segments"][0] == {
+        "start_ms": 0,
+        "end_ms": 2500,
+        "speaker": None,
+        "text": "안녕하세요",
+    }

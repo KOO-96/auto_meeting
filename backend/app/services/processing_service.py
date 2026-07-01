@@ -57,6 +57,11 @@ class ProcessingService:
                 f"Meeting is already being processed. job_id={existing.job_id if existing else None}"
             )
 
+        # A normal process request will not silently redo a finished meeting;
+        # reprocessing a completed meeting must go through the retry endpoint.
+        if not retry and meeting.status == MeetingStatus.completed:
+            raise conflict("Meeting is already processed. Use retry to reprocess.")
+
         self.meeting_service.ensure_processable_input(meeting)
 
         settings = get_settings()

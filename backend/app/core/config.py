@@ -47,6 +47,19 @@ class Settings(BaseSettings):
     ai_model_max_retries: int = 2
     ai_model_retry_backoff_seconds: float = 1.0
 
+    # Speech-to-text (OpenAI-compatible /audio/transcriptions). When
+    # stt_base_url is unset, the pipeline uses a mock transcript.
+    stt_base_url: str | None = None
+    stt_model: str = "whisper-1"
+    stt_language: str | None = None
+    stt_timeout_seconds: int = 300
+    stt_max_retries: int = 2
+
+    # Screen-recording frame sampling for VLM analysis (requires ffmpeg on PATH).
+    screen_frame_sampling_enabled: bool = True
+    screen_frame_interval_seconds: int = 60
+    screen_frame_max: int = 5
+
     # Login rate limiting (fixed window).
     login_rate_limit_max_attempts: int = 10
     login_rate_limit_window_seconds: int = 300

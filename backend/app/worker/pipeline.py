@@ -62,11 +62,18 @@ def _build_snapshot(meeting: Meeting) -> MeetingSnapshot:
     if meeting.additional_memo:
         memo_texts.insert(0, meeting.additional_memo)
 
+    timed_memos = [
+        {"timestamp_ms": memo.timestamp_ms, "text": memo.memo}
+        for memo in meeting.memos
+        if memo.memo and memo.timestamp_ms is not None
+    ]
+
     return MeetingSnapshot(
         meeting_id=meeting.id,
         title=meeting.title,
         input_files=input_files,
         memo_texts=memo_texts,
+        timed_memos=timed_memos,
     )
 
 

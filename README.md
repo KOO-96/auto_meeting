@@ -123,7 +123,7 @@ Backend Docker Compose는 별도 터미널에서 계속 떠 있어도 됩니다.
 10. 회의록 상세 결과 확인
 11. Markdown / PDF export 다운로드 확인
 
-현재 Qwen3.5-9B vLLM은 LLM/VLM 용도로 연결되어 있습니다. STT는 아직 모델 미확정이라 mock/developing 전사 상태입니다.
+현재 Qwen3.5-9B vLLM은 LLM/VLM 용도로 연결되어 있습니다. STT는 pluggable 구조로, `STT_BASE_URL`(OpenAI 호환 `/audio/transcriptions`)을 설정하면 실제 전사를 사용하고, 비워 두면 mock/developing 전사로 동작합니다. 화면 녹화는 `ffmpeg`가 설치되어 있으면 프레임을 샘플링해 VLM으로 분석합니다(없으면 자동 skip).
 
 Worker는 LangGraph `StateGraph` 기반 Agent pipeline으로 `입력 수집 -> STT mock -> 이미지/VLM 조건 분기 -> 타임라인 정렬 -> 회의록 생성 -> 검증 저장` 순서를 수행합니다.
 

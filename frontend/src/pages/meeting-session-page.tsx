@@ -30,11 +30,11 @@ import {
 } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
 import { meetingsApi } from '@/lib/api'
-import { requireElectronAPI } from '@/lib/electron'
+import { getElectronAPI, requireElectronAPI } from '@/lib/electron'
 import { formatBytes, formatDuration } from '@/lib/format'
 import { useAuthStore } from '@/stores/auth-store'
 import { useSessionStore } from '@/stores/session-store'
-import type { Meeting, MeetingSessionMetadata, TimelineMemo } from '@/types/domain'
+import type { MeetingSessionMetadata, TimelineMemo } from '@/types/domain'
 import type { PermissionStatus, SavedFile } from '@/types/electron'
 
 type PermissionKind = 'microphone' | 'screen'
@@ -95,69 +95,97 @@ export function MeetingSessionPage(): React.JSX.Element {
   const audioElapsedBaseRef = useRef(0)
   const audioSegmentStartedAtRef = useRef<number | null>(null)
 
+  // Guards so session setup runs once per meeting and post-unmount work is skipped.
+  const setupRanRef = useRef(false)
+  const mountedRef = useRef(true)
+
   const meetingQuery = useQuery({
     queryKey: ['meeting', meetingId],
     queryFn: () => meetingsApi.get(meetingId),
     enabled: Number.isFinite(meetingId),
   })
 
+  // Release media devices and clear the active-session flag on unmount. This
+  // is the single owner of teardown, so navigating away mid-recording never
+  // leaves the camera/mic/screen-capture running.
   useEffect(() => {
-    const meeting = meetingQuery.data
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      void getElectronAPI()?.setActiveMeetingSession({ active: false })
+      try {
+        screenRecorderRef.current?.stop()
+        audioRecorderRef.current?.stop()
+      } catch {
+        // ignore — we only care about releasing the underlying streams below
+      }
+      stopStream(screenStreamRef.current)
+      stopStream(audioStreamRef.current)
+      screenStreamRef.current = null
+      audioStreamRef.current = null
+    }
+  }, [])
 
+  // Initialize the session exactly once per meeting. Depending on the query
+  // data alone would re-run (and reset the store, wiping memos/timers) on every
+  // refetch/invalidation while a recording is in progress.
+  useEffect(() => {
+    if (setupRanRef.current) {
+      return
+    }
+    const meeting = meetingQuery.data
     if (!meeting) {
       return
     }
+    setupRanRef.current = true
 
-    let cancelled = false
+    void (async () => {
+      try {
+        const electron = requireElectronAPI()
+        const activeMeeting =
+          meeting.status === 'draft' ? await meetingsApi.start(meeting.id) : meeting
+        const directory = meeting.local_base_path
+          ? null
+          : await electron.createMeetingDirectory({
+              meetingId: activeMeeting.id,
+              title: activeMeeting.title,
+            })
+        const localBasePath = directory?.path ?? activeMeeting.local_base_path ?? null
+        const memos = await meetingsApi.getMemos(activeMeeting.id)
 
-    async function setupSession(currentMeeting: Meeting): Promise<void> {
-      const electron = requireElectronAPI()
-      const activeMeeting =
-        currentMeeting.status === 'draft'
-          ? await meetingsApi.start(currentMeeting.id)
-          : currentMeeting
-      const directory = currentMeeting.local_base_path
-        ? null
-        : await electron.createMeetingDirectory({
-            meetingId: activeMeeting.id,
-            title: activeMeeting.title,
+        if (!mountedRef.current) {
+          return
+        }
+
+        if (directory) {
+          await meetingsApi.update(activeMeeting.id, {
+            local_base_path: directory.path,
           })
-      const localBasePath = directory?.path ?? activeMeeting.local_base_path ?? null
-      const memos = await meetingsApi.getMemos(activeMeeting.id)
+          await queryClient.invalidateQueries({ queryKey: ['meetings'] })
+        }
 
-      if (cancelled) {
-        return
-      }
-
-      if (directory) {
-        await meetingsApi.update(activeMeeting.id, {
-          local_base_path: directory.path,
+        startSession({
+          meetingId: activeMeeting.id,
+          title: activeMeeting.title,
+          participantOnly: activeMeeting.participant_only,
+          participantIds: activeMeeting.participant_ids,
+          localBasePath,
+          attachments: activeMeeting.attachments,
         })
-        await queryClient.invalidateQueries({ queryKey: ['meetings'] })
+        setSessionMemos(memos)
+        await electron.setActiveMeetingSession({
+          active: true,
+          meetingId: activeMeeting.id,
+          title: activeMeeting.title,
+        })
+      } catch (error) {
+        if (mountedRef.current) {
+          setErrorMessage(
+            error instanceof Error ? error.message : '회의 세션 초기화에 실패했습니다.',
+          )
+        }
       }
-
-      startSession({
-        meetingId: activeMeeting.id,
-        title: activeMeeting.title,
-        participantOnly: activeMeeting.participant_only,
-        participantIds: activeMeeting.participant_ids,
-        localBasePath,
-        attachments: activeMeeting.attachments,
-      })
-      setSessionMemos(memos)
-      await electron.setActiveMeetingSession({
-        active: true,
-        meetingId: activeMeeting.id,
-        title: activeMeeting.title,
-      })
-    }
-
-    void setupSession(meeting)
-
-    return () => {
-      cancelled = true
-      void requireElectronAPI().setActiveMeetingSession({ active: false })
-    }
+    })()
   }, [meetingQuery.data, queryClient, setSessionMemos, startSession])
 
   useEffect(() => {
@@ -206,6 +234,9 @@ export function MeetingSessionPage(): React.JSX.Element {
 
   const startScreenRecording = async (): Promise<void> => {
     const electron = requireElectronAPI()
+    let screenStream: MediaStream | null = null
+    let microphoneStream: MediaStream | null = null
+    let started = false
 
     try {
       setErrorMessage(null)
@@ -226,7 +257,7 @@ export function MeetingSessionPage(): React.JSX.Element {
       }
 
       const source = await electron.getPrimaryScreenSource()
-      const screenStream = await navigator.mediaDevices.getUserMedia({
+      screenStream = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: {
           mandatory: {
@@ -235,7 +266,7 @@ export function MeetingSessionPage(): React.JSX.Element {
           },
         } as unknown as MediaTrackConstraints,
       })
-      const microphoneStream = await navigator.mediaDevices.getUserMedia({
+      microphoneStream = await navigator.mediaDevices.getUserMedia({
         audio: true,
         video: false,
       })
@@ -298,6 +329,7 @@ export function MeetingSessionPage(): React.JSX.Element {
 
       screenRecorderRef.current = recorder
       recorder.start(1000)
+      started = true
       session.setScreenStartedAt(Date.now())
       session.setScreenElapsed(0)
       session.setScreenRecordingStatus('recording')
@@ -312,6 +344,13 @@ export function MeetingSessionPage(): React.JSX.Element {
         },
       })
     } catch (error) {
+      // Release any streams acquired before the failure so a partial start
+      // (e.g. mic denied after screen granted) never leaks a live capture.
+      if (!started) {
+        stopStream(screenStream)
+        stopStream(microphoneStream)
+        screenStreamRef.current = null
+      }
       session.setScreenRecordingStatus('failed')
       const message =
         error instanceof Error ? error.message : '화면 녹화를 시작할 수 없습니다.'
@@ -343,6 +382,8 @@ export function MeetingSessionPage(): React.JSX.Element {
 
   const startAudioRecording = async (): Promise<void> => {
     const electron = requireElectronAPI()
+    let stream: MediaStream | null = null
+    let started = false
 
     try {
       setErrorMessage(null)
@@ -356,7 +397,7 @@ export function MeetingSessionPage(): React.JSX.Element {
         throw new Error(permissionMessage('microphone'))
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({
+      stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
         video: false,
       })
@@ -415,6 +456,7 @@ export function MeetingSessionPage(): React.JSX.Element {
 
       audioRecorderRef.current = recorder
       recorder.start(1000)
+      started = true
       session.setAudioStartedAt(Date.now())
       session.setAudioElapsed(0)
       session.setAudioRecordingStatus('recording')
@@ -425,6 +467,10 @@ export function MeetingSessionPage(): React.JSX.Element {
         message: 'audio recording started',
       })
     } catch (error) {
+      if (!started) {
+        stopStream(stream)
+        audioStreamRef.current = null
+      }
       session.setAudioRecordingStatus('failed')
       const message =
         error instanceof Error ? error.message : '음성 녹음을 시작할 수 없습니다.'
