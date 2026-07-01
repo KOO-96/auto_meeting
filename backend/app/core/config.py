@@ -27,12 +27,32 @@ class Settings(BaseSettings):
     export_dir: Path = Path("storage/exports")
     max_upload_size_mb: int = 1024
     rq_queue_name: str = "meeting-processing"
+
+    # RQ job lifecycle
+    rq_job_timeout_seconds: int = 900
+    rq_result_ttl_seconds: int = 86400
+    rq_failure_ttl_seconds: int = 604800
+    rq_max_retries: int = 2
+    rq_retry_interval_seconds: int = 30
+    # A job left in an active state longer than this is treated as orphaned.
+    stuck_job_timeout_seconds: int = 1800
+
     ai_worker_enabled: bool = True
     ai_model_base_url: str | None = None
     ai_model_name: str = "test-9b-llm"
     ai_model_timeout_seconds: int = 120
     ai_model_max_tokens: int = 2048
     ai_model_temperature: float = 0.0
+    # Model client retry/backoff for transient upstream failures.
+    ai_model_max_retries: int = 2
+    ai_model_retry_backoff_seconds: float = 1.0
+
+    # Login rate limiting (fixed window).
+    login_rate_limit_max_attempts: int = 10
+    login_rate_limit_window_seconds: int = 300
+
+    # Structured JSON logs (recommended in non-local environments).
+    json_logs: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

@@ -1,11 +1,15 @@
+import logging
 from pathlib import Path
 from typing import Any
 
 from app.worker.openai_compatible import (
+    ModelClientError,
     image_content,
     json_chat_completion,
     model_enabled,
 )
+
+logger = logging.getLogger(__name__)
 
 
 VALID_IMAGE_TYPES = {
@@ -21,6 +25,7 @@ def fallback_visual(reason: str = "vlm_unavailable") -> dict:
     summary = {
         "image_input_missing": "이미지 입력이 없어 화면/이미지 분석은 건너뛰었습니다.",
         "vlm_unavailable": "VLM 모델을 사용할 수 없어 이미지 분석은 개발 중 상태로 처리했습니다.",
+        "vlm_error": "VLM 분석 중 오류가 발생해 해당 이미지는 건너뛰었습니다.",
     }.get(reason, "이미지 분석은 개발 중 상태로 처리했습니다.")
 
     return {
@@ -49,19 +54,24 @@ def analyze_image(path: str | None) -> dict:
 
 JSON 외의 설명, markdown, code fence는 출력하지 마세요.
 """
-    payload = json_chat_completion(
-        [
-            {
-                "role": "system",
-                "content": (
-                    "You are Company Brain Lite's visual analysis model. "
-                    "Output valid JSON only. No markdown. Do not explain."
-                ),
-            },
-            {"role": "user", "content": image_content(path, prompt)},
-        ],
-        max_tokens=1024,
-    )
+    try:
+        payload = json_chat_completion(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are Company Brain Lite's visual analysis model. "
+                        "Output valid JSON only. No markdown. Do not explain."
+                    ),
+                },
+                {"role": "user", "content": image_content(path, prompt)},
+            ],
+            max_tokens=1024,
+        )
+    except ModelClientError as error:
+        logger.warning("Visual analysis model call failed: %s", error)
+        return fallback_visual(reason="vlm_error")
+
     return normalize_visual(payload)
 
 

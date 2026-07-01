@@ -1,11 +1,19 @@
 import base64
 import json
+import logging
 import mimetypes
+import time
 from pathlib import Path
 from typing import Any
 from urllib import error, request
 
 from app.core.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+# Upstream statuses worth retrying (transient / overloaded), vs 4xx which are
+# permanent client errors and should fail fast.
+RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
 
 
 class ModelClientError(RuntimeError):
@@ -36,19 +44,42 @@ def chat_completion(messages: list[dict[str, Any]], max_tokens: int | None = Non
         method="POST",
     )
 
-    try:
-        with request.urlopen(req, timeout=settings.ai_model_timeout_seconds) as response:
-            body = json.loads(response.read().decode("utf-8"))
-    except error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise ModelClientError(f"vLLM request failed: {exc.code} {detail}") from exc
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ModelClientError(f"vLLM request failed: {exc}") from exc
+    body = _request_with_retry(req, settings)
 
     try:
         return str(body["choices"][0]["message"]["content"])
     except (KeyError, IndexError, TypeError) as exc:
         raise ModelClientError("vLLM response did not include assistant content.") from exc
+
+
+def _request_with_retry(req: request.Request, settings) -> dict[str, Any]:
+    attempts = max(1, settings.ai_model_max_retries + 1)
+    last_error: Exception | None = None
+
+    for attempt in range(attempts):
+        try:
+            with request.urlopen(req, timeout=settings.ai_model_timeout_seconds) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            last_error = ModelClientError(f"vLLM request failed: {exc.code} {detail}")
+            if exc.code not in RETRYABLE_STATUS:
+                raise last_error from exc
+        except (OSError, json.JSONDecodeError) as exc:
+            last_error = ModelClientError(f"vLLM request failed: {exc}")
+
+        if attempt < attempts - 1:
+            backoff = settings.ai_model_retry_backoff_seconds * (2**attempt)
+            logger.warning(
+                "Model request failed (attempt %s/%s), retrying in %.1fs: %s",
+                attempt + 1,
+                attempts,
+                backoff,
+                last_error,
+            )
+            time.sleep(backoff)
+
+    raise last_error or ModelClientError("vLLM request failed after retries.")
 
 
 def json_chat_completion(

@@ -1,10 +1,10 @@
+import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Request
 from sqlalchemy.orm import Session
 
-import logging
-
+from app.core.config import get_settings
 from app.core.exceptions import bad_request
 from app.core.security import (
     create_access_token,
@@ -13,16 +13,15 @@ from app.core.security import (
     hash_token,
     verify_password,
 )
+from app.models.auth_session import AuthSession
+from app.models.user import User
+from app.repositories.auth_session_repository import AuthSessionRepository
+from app.repositories.user_repository import UserRepository
 
 logger = logging.getLogger(__name__)
 
 # Environments where a well-known seed admin may be auto-created for convenience.
 _SEED_ADMIN_ENVIRONMENTS = {"local", "development", "dev", "test"}
-from app.models.auth_session import AuthSession
-from app.models.user import User
-from app.repositories.auth_session_repository import AuthSessionRepository
-from app.repositories.user_repository import UserRepository
-from app.core.config import get_settings
 
 
 class AuthService:
@@ -35,6 +34,8 @@ class AuthService:
         user = self.users.get_by_email(email)
 
         if not user or not user.is_active or not verify_password(password, user.password_hash):
+            client = request.client.host if request.client else "unknown"
+            logger.warning("Failed login attempt for email=%s from %s", email, client)
             raise bad_request("Invalid email or password.")
 
         return self._issue_tokens(user, request)

@@ -1,10 +1,12 @@
 from datetime import datetime, timezone
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import bad_request, conflict, not_found
 from app.models.enums import FileType, MeetingStatus, RoleInMeeting
 from app.models.meeting import Meeting
+from app.models.meeting_analysis import MeetingAnalysis
 from app.models.meeting_file import MeetingFile
 from app.models.meeting_participant import MeetingParticipant
 from app.models.user import User
@@ -29,6 +31,17 @@ class MeetingService:
     def list_accessible(self, user: User) -> list[Meeting]:
         meetings = self.repository.list_all()
         return [meeting for meeting in meetings if self.permissions.can_access_meeting(meeting, user)]
+
+    def get_result(self, meeting_id: int, user: User) -> MeetingAnalysis:
+        self.get_accessible(meeting_id, user)
+        analysis = self.db.scalar(
+            select(MeetingAnalysis)
+            .where(MeetingAnalysis.meeting_id == meeting_id)
+            .order_by(MeetingAnalysis.created_at.desc())
+        )
+        if not analysis:
+            raise not_found("Meeting result not found.")
+        return analysis
 
     def create(self, payload: MeetingCreate, user: User) -> Meeting:
         meeting = Meeting(

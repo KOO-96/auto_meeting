@@ -10,7 +10,7 @@ class TimelineMemo(TimestampMixin, Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     meeting_id: Mapped[int] = mapped_column(ForeignKey("meetings.id", ondelete="CASCADE"), index=True)
-    author_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    author_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     timestamp_ms: Mapped[int] = mapped_column(Integer, nullable=False)
     audio_elapsed_ms: Mapped[int | None] = mapped_column(Integer)
     screen_elapsed_ms: Mapped[int | None] = mapped_column(Integer)

@@ -16,7 +16,7 @@ class MeetingParticipant(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     meeting_id: Mapped[int] = mapped_column(ForeignKey("meetings.id", ondelete="CASCADE"))
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     role_in_meeting: Mapped[RoleInMeeting] = mapped_column(
         Enum(RoleInMeeting),
         default=RoleInMeeting.participant,

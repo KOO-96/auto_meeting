@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -10,6 +10,10 @@ from app.models.mixins import TimestampMixin
 
 class ProcessingJob(TimestampMixin, Base):
     __tablename__ = "processing_jobs"
+    __table_args__ = (
+        # Supports the frequent "latest job for a meeting" lookup.
+        Index("ix_processing_jobs_meeting_created", "meeting_id", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     meeting_id: Mapped[int] = mapped_column(ForeignKey("meetings.id", ondelete="CASCADE"), index=True)

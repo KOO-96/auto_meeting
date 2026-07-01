@@ -1,6 +1,13 @@
+import logging
 from typing import Any
 
-from app.worker.openai_compatible import json_chat_completion, model_enabled
+from app.worker.openai_compatible import (
+    ModelClientError,
+    json_chat_completion,
+    model_enabled,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def fallback_minutes(
@@ -69,27 +76,36 @@ def generate_minutes(
     if not model_enabled():
         return fallback_minutes(title, transcript, memo_count, transcript_status)
 
-    payload = json_chat_completion(
-        [
-            {
-                "role": "system",
-                "content": (
-                    "You are Company Brain Lite's meeting-minutes JSON generator. "
-                    "Output valid JSON only. No markdown. Do not explain."
-                ),
-            },
-            {
-                "role": "user",
-                "content": build_prompt(
-                    title,
-                    transcript,
-                    memo_texts or [],
-                    visual_summary,
-                    transcript_status,
-                ),
-            },
-        ],
-    )
+    try:
+        payload = json_chat_completion(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are Company Brain Lite's meeting-minutes JSON generator. "
+                        "Output valid JSON only. No markdown. Do not explain."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": build_prompt(
+                        title,
+                        transcript,
+                        memo_texts or [],
+                        visual_summary,
+                        transcript_status,
+                    ),
+                },
+            ],
+        )
+    except ModelClientError as error:
+        # Degrade gracefully: a model/parse failure yields a usable draft
+        # instead of failing the whole meeting.
+        logger.warning("Minutes generation failed, using fallback: %s", error)
+        minutes = fallback_minutes(title, transcript, memo_count, transcript_status)
+        minutes["validation_result"]["model_error"] = str(error)
+        return minutes
+
     return normalize_minutes(payload, title, transcript, memo_count, transcript_status)
 
 

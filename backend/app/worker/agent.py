@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass, field
 from collections.abc import Callable
 from typing import TypedDict
@@ -5,11 +6,11 @@ from typing import TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from app.models.enums import FileType
-from app.models.meeting import Meeting
-from app.models.meeting_file import MeetingFile
 from app.worker.llm_client import generate_minutes
 from app.worker.stt_client import transcribe_audio
 from app.worker.vlm_client import analyze_image, fallback_visual
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,26 @@ class AgentInputFile:
     path: str | None
     mime_type: str | None
     file_name: str | None
+
+    @property
+    def is_image(self) -> bool:
+        return self.file_type == FileType.image or (self.mime_type or "").startswith(
+            "image/",
+        )
+
+
+@dataclass(frozen=True)
+class MeetingSnapshot:
+    """Plain, session-independent view of a meeting's processing inputs.
+
+    Built by the pipeline while a DB session is open, then handed to the agent
+    so the (slow, network-bound) graph run never holds an ORM session open.
+    """
+
+    meeting_id: int
+    title: str
+    input_files: list[AgentInputFile]
+    memo_texts: list[str]
 
 
 @dataclass
@@ -63,23 +84,20 @@ class AgentGraphState(TypedDict, total=False):
     node_trace: list[str]
 
 
-def path_for_file(file: MeetingFile) -> str | None:
-    return file.storage_path or file.local_source_path
-
-
 class MeetingAgent:
     """LangGraph-backed meeting processing agent.
 
     The RQ worker still owns DB status/result persistence, while LangGraph owns
-    deterministic orchestration, branching, and validation state.
+    deterministic orchestration, branching, and validation state. The agent
+    operates purely on a session-independent MeetingSnapshot.
     """
 
     def __init__(
         self,
-        meeting: Meeting,
+        snapshot: MeetingSnapshot,
         on_node_complete: Callable[[str], None] | None = None,
     ):
-        self.meeting = meeting
+        self.snapshot = snapshot
         self.on_node_complete = on_node_complete
         self.state = self.to_dataclass(self.initial_state())
         self.graph = self.build_graph()
@@ -91,8 +109,8 @@ class MeetingAgent:
 
     def initial_state(self) -> AgentGraphState:
         return {
-            "meeting_id": self.meeting.id,
-            "title": self.meeting.title,
+            "meeting_id": self.snapshot.meeting_id,
+            "title": self.snapshot.title,
             "audio_files": [],
             "screen_files": [],
             "image_files": [],
@@ -141,35 +159,22 @@ class MeetingAgent:
         image_files: list[AgentInputFile] = []
         document_files: list[AgentInputFile] = []
 
-        for file in self.meeting.files:
-            input_file = AgentInputFile(
-                id=file.id,
-                file_type=file.file_type,
-                path=path_for_file(file),
-                mime_type=file.mime_type,
-                file_name=file.original_filename or file.stored_filename,
-            )
-
-            if file.file_type == FileType.audio:
+        for input_file in self.snapshot.input_files:
+            if input_file.file_type == FileType.audio:
                 audio_files.append(input_file)
-            elif file.file_type == FileType.screen_recording:
+            elif input_file.file_type == FileType.screen_recording:
                 screen_files.append(input_file)
-            elif self.is_image_file(file):
+            elif input_file.is_image:
                 image_files.append(input_file)
-            elif file.file_type in {FileType.document, FileType.attachment}:
+            elif input_file.file_type in {FileType.document, FileType.attachment}:
                 document_files.append(input_file)
-
-        memo_texts = [memo.memo for memo in self.meeting.memos if memo.memo]
-
-        if self.meeting.additional_memo:
-            memo_texts.insert(0, self.meeting.additional_memo)
 
         return {
             "audio_files": audio_files,
             "screen_files": screen_files,
             "image_files": image_files,
             "document_files": document_files,
-            "memo_texts": memo_texts,
+            "memo_texts": list(self.snapshot.memo_texts),
             "node_trace": self.complete_node(state, "load_inputs"),
         }
 
@@ -221,9 +226,19 @@ class MeetingAgent:
 
     def process_visuals(self, state: AgentGraphState) -> AgentGraphState:
         visual_results: list[VisualAgentResult] = []
+        warnings = list(state.get("warnings", []))
 
         for image_file in state.get("image_files", []):
-            visual = analyze_image(image_file.path)
+            try:
+                visual = analyze_image(image_file.path)
+            except Exception as error:  # noqa: BLE001 - isolate per-image failure.
+                logger.warning(
+                    "Visual analysis failed for file %s: %s", image_file.id, error
+                )
+                visual = fallback_visual(reason="vlm_error")
+                warnings.append(
+                    f"이미지({image_file.file_name or image_file.id}) 분석에 실패해 건너뛰었습니다."
+                )
             visual_results.append(
                 VisualAgentResult(
                     payload=visual,
@@ -240,6 +255,7 @@ class MeetingAgent:
         return {
             "visual_results": visual_results,
             "visual_summary": visual_summary,
+            "warnings": warnings,
             "node_trace": self.complete_node(state, "process_visuals"),
         }
 
@@ -346,9 +362,3 @@ class MeetingAgent:
             if file.path:
                 return file.path
         return None
-
-    @staticmethod
-    def is_image_file(file: MeetingFile) -> bool:
-        return file.file_type == FileType.image or (file.mime_type or "").startswith(
-            "image/",
-        )

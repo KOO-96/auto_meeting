@@ -1,14 +1,10 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user
-from app.core.exceptions import not_found
 from app.db.session import get_db
-from app.models.meeting_analysis import MeetingAnalysis
-from app.models.processing_job import ProcessingJob
 from app.models.user import User
 from app.schemas.meeting import (
     MeetingCreate,
@@ -145,12 +141,12 @@ def get_status(
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ):
+    # Reading status is a good moment to reconcile orphaned/stuck jobs so the
+    # UI can surface a failure (and offer retry) instead of spinning forever.
+    processing = ProcessingService(db)
+    processing.reap_meeting(meeting_id)
     meeting = MeetingService(db).get_accessible(meeting_id, current_user)
-    job = db.scalar(
-        select(ProcessingJob)
-        .where(ProcessingJob.meeting_id == meeting_id)
-        .order_by(ProcessingJob.created_at.desc())
-    )
+    job = processing.latest_job(meeting_id)
     current = job.progress_current if job else meeting.progress_current
     total = job.progress_total if job else meeting.progress_total
     return MeetingStatusResponse(
@@ -169,12 +165,5 @@ def get_result(
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ):
-    MeetingService(db).get_accessible(meeting_id, current_user)
-    analysis = db.scalar(
-        select(MeetingAnalysis)
-        .where(MeetingAnalysis.meeting_id == meeting_id)
-        .order_by(MeetingAnalysis.created_at.desc())
-    )
-    if not analysis:
-        raise not_found("Meeting result not found.")
+    analysis = MeetingService(db).get_result(meeting_id, current_user)
     return MeetingResultRead.model_validate(analysis)

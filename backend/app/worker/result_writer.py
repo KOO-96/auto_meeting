@@ -21,6 +21,20 @@ class ResultWriter:
     def __init__(self, db: Session):
         self.db = db
 
+    def reset_derived_results(self, meeting_id: int) -> None:
+        """Remove prior derived rows so re-processing is idempotent.
+
+        Transcripts and visual analyses were previously appended on every run,
+        so retries accumulated duplicates. Clearing them first makes a re-run
+        replace rather than duplicate.
+        """
+        for model in (MeetingTranscript, MeetingVisualAnalysis, MeetingAnalysis):
+            for row in self.db.scalars(
+                select(model).where(model.meeting_id == meeting_id)
+            ):
+                self.db.delete(row)
+        self.db.flush()
+
     def update_progress(
         self,
         meeting: Meeting,
@@ -72,15 +86,8 @@ class ResultWriter:
         )
 
     def save_analysis(self, meeting_id: int, payload: dict) -> None:
-        existing = self.db.scalar(
-            select(MeetingAnalysis)
-            .where(MeetingAnalysis.meeting_id == meeting_id)
-            .order_by(MeetingAnalysis.created_at.desc())
-        )
-        if existing:
-            self.db.delete(existing)
-            self.db.flush()
-
+        # Idempotency is handled up-front by reset_derived_results(); this is a
+        # pure insert.
         self.db.add(
             MeetingAnalysis(
                 meeting_id=meeting_id,
@@ -101,6 +108,9 @@ class ResultWriter:
         self.db.commit()
 
     def fail(self, meeting: Meeting, job: ProcessingJob, message: str) -> None:
+        # Discard any partially-staged transcript/visual/analysis rows from the
+        # failed run so we never commit half-written results.
+        self.db.rollback()
         now = datetime.now(timezone.utc)
         meeting.status = MeetingStatus.failed
         meeting.error_message = message
