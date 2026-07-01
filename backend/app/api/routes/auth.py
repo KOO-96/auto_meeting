@@ -6,7 +6,13 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_current_user
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.auth import LoginRequest, LogoutRequest, RefreshRequest, TokenResponse
+from app.schemas.auth import (
+    ChangePasswordRequest,
+    LoginRequest,
+    LogoutRequest,
+    RefreshRequest,
+    TokenResponse,
+)
 from app.schemas.user import UserRead
 from app.services.auth_service import AuthService
 
@@ -39,4 +45,17 @@ def logout(payload: LogoutRequest, db: Annotated[Session, Depends(get_db)]):
 def refresh(payload: RefreshRequest, request: Request, db: Annotated[Session, Depends(get_db)]):
     user, access_token, refresh_token = AuthService(db).refresh(payload.refresh_token, request)
     return TokenResponse(access_token=access_token, refresh_token=refresh_token, user=user)
+
+
+@router.post("/change-password", response_model=UserRead)
+def change_password(
+    payload: ChangePasswordRequest,
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+):
+    return AuthService(db).change_password(
+        current_user,
+        payload.current_password,
+        payload.new_password,
+    )
 

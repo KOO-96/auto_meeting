@@ -35,4 +35,3 @@ class MeetingResultRead(ORMModel):
     validation_result: dict
     created_at: datetime
     updated_at: datetime
-

@@ -145,4 +145,7 @@ export type ElectronAPI = {
   setActiveMeetingSession: (
     payload: ActiveMeetingSessionPayload,
   ) => Promise<void>
+  getSecureItem: (key: string) => Promise<string | null>
+  setSecureItem: (key: string, value: string) => Promise<void>
+  removeSecureItem: (key: string) => Promise<void>
 }

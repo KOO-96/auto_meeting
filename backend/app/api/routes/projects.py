@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_current_user
+from app.api.dependencies import get_current_user, require_admin
 from app.core.exceptions import not_found
 from app.db.session import get_db
 from app.models.project import Project
@@ -24,7 +24,7 @@ def list_projects(db: Annotated[Session, Depends(get_db)], _: Annotated[User, De
 def create_project(
     payload: ProjectCreate,
     db: Annotated[Session, Depends(get_db)],
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(require_admin)],
 ):
     project = Project(name=payload.name, description=payload.description, created_by=current_user.id)
     db.add(project)
@@ -46,7 +46,7 @@ def update_project(
     project_id: int,
     payload: ProjectUpdate,
     db: Annotated[Session, Depends(get_db)],
-    _: Annotated[User, Depends(get_current_user)],
+    _: Annotated[User, Depends(require_admin)],
 ):
     project = db.get(Project, project_id)
     if not project:
@@ -59,7 +59,7 @@ def update_project(
 
 
 @router.delete("/{project_id}")
-def delete_project(project_id: int, db: Annotated[Session, Depends(get_db)], _: Annotated[User, Depends(get_current_user)]):
+def delete_project(project_id: int, db: Annotated[Session, Depends(get_db)], _: Annotated[User, Depends(require_admin)]):
     project = db.get(Project, project_id)
     if not project:
         raise not_found("Project not found.")

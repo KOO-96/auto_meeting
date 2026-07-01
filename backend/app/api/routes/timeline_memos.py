@@ -43,7 +43,8 @@ def create_memo(
     MeetingService(db).get_accessible(meeting_id, current_user)
     memo = TimelineMemo(
         meeting_id=meeting_id,
-        author_id=payload.created_by or current_user.id,
+        # Author is always the authenticated caller — never trust a client-supplied id.
+        author_id=current_user.id,
         timestamp_ms=payload.timestamp_ms,
         audio_elapsed_ms=payload.audio_elapsed_ms,
         screen_elapsed_ms=payload.screen_elapsed_ms,
@@ -112,7 +113,7 @@ async def import_memos(
     for item in payload:
         memo = TimelineMemo(
             meeting_id=meeting_id,
-            author_id=item.get("created_by") or current_user.id,
+            author_id=current_user.id,
             timestamp_ms=item["timestamp_ms"],
             audio_elapsed_ms=item.get("audio_elapsed_ms"),
             screen_elapsed_ms=item.get("screen_elapsed_ms"),

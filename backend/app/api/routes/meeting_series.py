@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_current_user
+from app.api.dependencies import get_current_user, require_admin
 from app.core.exceptions import not_found
 from app.db.session import get_db
 from app.models.meeting_series import MeetingSeries
@@ -24,7 +24,7 @@ def list_series(db: Annotated[Session, Depends(get_db)], _: Annotated[User, Depe
 def create_series(
     payload: MeetingSeriesCreate,
     db: Annotated[Session, Depends(get_db)],
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(require_admin)],
 ):
     series = MeetingSeries(
         project_id=payload.project_id,
@@ -51,7 +51,7 @@ def update_series(
     series_id: int,
     payload: MeetingSeriesUpdate,
     db: Annotated[Session, Depends(get_db)],
-    _: Annotated[User, Depends(get_current_user)],
+    _: Annotated[User, Depends(require_admin)],
 ):
     series = db.get(MeetingSeries, series_id)
     if not series:
@@ -64,7 +64,7 @@ def update_series(
 
 
 @router.delete("/{series_id}")
-def delete_series(series_id: int, db: Annotated[Session, Depends(get_db)], _: Annotated[User, Depends(get_current_user)]):
+def delete_series(series_id: int, db: Annotated[Session, Depends(get_db)], _: Annotated[User, Depends(require_admin)]):
     series = db.get(MeetingSeries, series_id)
     if not series:
         raise not_found("Meeting series not found.")

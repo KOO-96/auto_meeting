@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test_company_brain.db")
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key")
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-pytest-0123456789")
 os.environ.setdefault("AI_WORKER_ENABLED", "false")
 os.environ.setdefault("UPLOAD_DIR", "storage/test_uploads")
 os.environ.setdefault("EXPORT_DIR", "storage/test_exports")

@@ -33,5 +33,6 @@ class UserRead(ORMModel):
     position: str | None = None
     role: UserRole
     is_active: bool
+    must_change_password: bool = False
     created_at: datetime
     updated_at: datetime

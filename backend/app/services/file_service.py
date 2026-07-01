@@ -66,7 +66,7 @@ class FileService:
         meeting = self.meetings.get(meeting_id)
         if not meeting:
             raise not_found("Meeting not found.")
-        self.permissions.require_admin(user)
+        # Anyone with access to the meeting (admin, owner, or participant) may upload.
         self.permissions.require_meeting_access(meeting, user)
 
         original = upload.filename or "upload.bin"
@@ -114,7 +114,7 @@ class FileService:
         meeting = self.meetings.get(meeting_id)
         if not meeting:
             raise not_found("Meeting not found.")
-        self.permissions.require_admin(user)
+        self.permissions.require_meeting_access(meeting, user)
         file = self.files.get_for_meeting(meeting_id, file_id)
         if not file:
             raise not_found("File not found.")

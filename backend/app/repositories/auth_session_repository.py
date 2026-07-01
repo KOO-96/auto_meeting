@@ -20,6 +20,18 @@ class AuthSessionRepository:
             )
         )
 
+    def list_active_for_user(self, user_id: int) -> list[AuthSession]:
+        now = datetime.now(timezone.utc)
+        return list(
+            self.db.scalars(
+                select(AuthSession).where(
+                    AuthSession.user_id == user_id,
+                    AuthSession.revoked_at.is_(None),
+                    AuthSession.expires_at > now,
+                )
+            )
+        )
+
     def revoke(self, session: AuthSession) -> None:
         session.revoked_at = datetime.now(timezone.utc)
 

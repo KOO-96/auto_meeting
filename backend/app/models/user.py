@@ -17,6 +17,9 @@ class User(TimestampMixin, Base):
     position: Mapped[str | None] = mapped_column(String(120))
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.member, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    must_change_password: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
 
     sessions = relationship("AuthSession", back_populates="user", cascade="all, delete-orphan")
 

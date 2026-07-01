@@ -4,14 +4,16 @@ import {
   desktopCapturer,
   dialog,
   ipcMain,
+  safeStorage,
   screen,
+  session,
   shell,
   systemPreferences,
 } from 'electron'
 import type { OpenDialogOptions } from 'electron'
-import { mkdir, readFile, stat, writeFile, copyFile, appendFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, stat, writeFile, copyFile, appendFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { basename, extname, join } from 'node:path'
+import { basename, extname, join, resolve, sep } from 'node:path'
 import type {
   ActiveMeetingSessionPayload,
   AppLogPayload,
@@ -35,6 +37,144 @@ let allowCloseAfterConfirm = false
 
 function companyBrainRoot(): string {
   return join(app.getPath('home'), 'CompanyBrain')
+}
+
+// --- IPC input validation / path confinement -------------------------------
+
+function assertMeetingId(meetingId: unknown): number {
+  if (
+    typeof meetingId !== 'number' ||
+    !Number.isInteger(meetingId) ||
+    meetingId <= 0
+  ) {
+    throw new Error('Invalid meetingId')
+  }
+
+  return meetingId
+}
+
+// Reduce an arbitrary client-supplied file name to a single safe path segment.
+// Rejects anything containing path separators, traversal, or that is empty.
+function safeFileName(fileName: unknown): string {
+  if (typeof fileName !== 'string' || fileName.trim().length === 0) {
+    throw new Error('Invalid file name')
+  }
+
+  const base = basename(fileName)
+
+  if (base !== fileName || base === '.' || base === '..') {
+    throw new Error('Invalid file name')
+  }
+
+  return base
+}
+
+// Join a base directory with a client-supplied file name, guaranteeing the
+// resolved path stays inside the base directory.
+function resolveInside(baseDir: string, fileName: unknown): string {
+  const target = resolve(baseDir, safeFileName(fileName))
+  const normalizedBase = resolve(baseDir)
+
+  if (target !== normalizedBase && !target.startsWith(normalizedBase + sep)) {
+    throw new Error('Resolved path escapes the allowed directory')
+  }
+
+  return target
+}
+
+// Confine an arbitrary path to the user's configured save directory.
+async function assertWithinSaveDirectory(target: unknown): Promise<string> {
+  if (typeof target !== 'string' || target.length === 0) {
+    throw new Error('Invalid path')
+  }
+
+  const settings = await readSettings()
+  const root = resolve(settings.defaultSaveDirectory)
+  const resolved = resolve(target)
+
+  if (resolved !== root && !resolved.startsWith(root + sep)) {
+    throw new Error('Path is outside the allowed directory')
+  }
+
+  return resolved
+}
+
+// --- Encrypted key/value store (auth tokens etc.) --------------------------
+// Persisted under userData and encrypted with the OS keychain via safeStorage.
+
+function secureStorePath(): string {
+  return join(app.getPath('userData'), 'secure-store.json')
+}
+
+async function readSecureStore(): Promise<Record<string, string>> {
+  const path = secureStorePath()
+
+  if (!existsSync(path)) {
+    return {}
+  }
+
+  try {
+    const raw = await readFile(path)
+    const decoded = safeStorage.isEncryptionAvailable()
+      ? safeStorage.decryptString(raw)
+      : raw.toString('utf8')
+    const parsed = JSON.parse(decoded) as unknown
+    return parsed && typeof parsed === 'object'
+      ? (parsed as Record<string, string>)
+      : {}
+  } catch {
+    return {}
+  }
+}
+
+async function writeSecureStore(data: Record<string, string>): Promise<void> {
+  const path = secureStorePath()
+  const serialized = JSON.stringify(data)
+  const payload = safeStorage.isEncryptionAvailable()
+    ? safeStorage.encryptString(serialized)
+    : Buffer.from(serialized, 'utf8')
+
+  await writeFile(path, payload)
+}
+
+async function getSecureItem(key: unknown): Promise<string | null> {
+  if (typeof key !== 'string' || !key) {
+    throw new Error('Invalid secure key')
+  }
+
+  const store = await readSecureStore()
+  return store[key] ?? null
+}
+
+async function setSecureItem(key: unknown, value: unknown): Promise<void> {
+  if (typeof key !== 'string' || !key) {
+    throw new Error('Invalid secure key')
+  }
+
+  if (typeof value !== 'string') {
+    throw new Error('Invalid secure value')
+  }
+
+  const store = await readSecureStore()
+  store[key] = value
+  await writeSecureStore(store)
+}
+
+async function removeSecureItem(key: unknown): Promise<void> {
+  if (typeof key !== 'string' || !key) {
+    throw new Error('Invalid secure key')
+  }
+
+  const store = await readSecureStore()
+  if (key in store) {
+    delete store[key]
+
+    if (Object.keys(store).length === 0) {
+      await rm(secureStorePath(), { force: true })
+    } else {
+      await writeSecureStore(store)
+    }
+  }
 }
 
 function defaultSettings(): AppSettings {
@@ -88,7 +228,7 @@ async function writeSettings(payload: Partial<AppSettings>): Promise<AppSettings
 
 async function meetingDirectory(meetingId: number): Promise<string> {
   const settings = await readSettings()
-  return join(settings.defaultSaveDirectory, 'meetings', String(meetingId))
+  return join(settings.defaultSaveDirectory, 'meetings', String(assertMeetingId(meetingId)))
 }
 
 async function createMeetingDirectories(
@@ -104,9 +244,10 @@ async function createMeetingDirectories(
   logsPath: string
   exportsPath: string
 }> {
-  const basePath = await meetingDirectory(payload.meetingId)
+  const meetingId = assertMeetingId(payload.meetingId)
+  const basePath = await meetingDirectory(meetingId)
   const paths = {
-    meetingId: payload.meetingId,
+    meetingId,
     path: basePath,
     screenPath: join(basePath, 'screen'),
     audioPath: join(basePath, 'audio'),
@@ -250,7 +391,7 @@ async function saveRecordingFile(
   })
   const targetDirectory =
     payload.folder === 'screen' ? directories.screenPath : directories.audioPath
-  const targetPath = join(targetDirectory, payload.fileName)
+  const targetPath = resolveInside(targetDirectory, payload.fileName)
   const buffer = normalizeBinary(payload.data)
 
   await writeFile(targetPath, buffer)
@@ -286,7 +427,7 @@ async function saveJsonFile(payload: SaveJsonFilePayload): Promise<SavedFile> {
   })
   const targetDirectory =
     payload.folder === 'memos' ? directories.memosPath : directories.metadataPath
-  const targetPath = join(targetDirectory, payload.fileName)
+  const targetPath = resolveInside(targetDirectory, payload.fileName)
   const content = JSON.stringify(payload.data, null, 2)
 
   await writeFile(targetPath, content)
@@ -399,7 +540,7 @@ async function saveExportFile(payload: SaveExportFilePayload): Promise<SavedFile
   const directories = await createMeetingDirectories({
     meetingId: payload.meetingId,
   })
-  const targetPath = join(directories.exportsPath, payload.fileName)
+  const targetPath = resolveInside(directories.exportsPath, payload.fileName)
 
   await writeFile(targetPath, payload.content)
 
@@ -426,7 +567,7 @@ async function saveBinaryExport(
   const directories = await createMeetingDirectories({
     meetingId: payload.meetingId,
   })
-  const targetPath = join(directories.exportsPath, payload.fileName)
+  const targetPath = resolveInside(directories.exportsPath, payload.fileName)
   const buffer = normalizeBinary(payload.data)
 
   await writeFile(targetPath, buffer)
@@ -451,7 +592,7 @@ async function savePdfExport(payload: SavePdfExportPayload): Promise<SavedFile> 
   const directories = await createMeetingDirectories({
     meetingId: payload.meetingId,
   })
-  const targetPath = join(directories.exportsPath, payload.fileName)
+  const targetPath = resolveInside(directories.exportsPath, payload.fileName)
   const pdfWindow = new BrowserWindow({
     show: false,
     webPreferences: {
@@ -493,6 +634,97 @@ async function savePdfExport(payload: SavePdfExportPayload): Promise<SavedFile> 
   }
 }
 
+function isDev(): boolean {
+  return Boolean(process.env.ELECTRON_RENDERER_URL)
+}
+
+// Deny all new-window requests and block navigation away from the app's own
+// content. External links are opened in the OS browser instead.
+function applyNavigationGuards(window: BrowserWindow): void {
+  const rendererUrl = process.env.ELECTRON_RENDERER_URL
+
+  const isAllowedNavigation = (target: string): boolean => {
+    if (target.startsWith('file://')) {
+      return true
+    }
+    if (rendererUrl && target.startsWith(rendererUrl)) {
+      return true
+    }
+    return false
+  }
+
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) {
+      void shell.openExternal(url)
+    }
+    return { action: 'deny' }
+  })
+
+  window.webContents.on('will-navigate', (event, url) => {
+    if (!isAllowedNavigation(url)) {
+      event.preventDefault()
+      if (/^https?:\/\//i.test(url)) {
+        void shell.openExternal(url)
+      }
+    }
+  })
+
+  window.webContents.on('will-attach-webview', (event) => {
+    // The app never uses <webview>; block any attempt to attach one.
+    event.preventDefault()
+  })
+}
+
+// Attach a Content-Security-Policy to every renderer response. The backend API
+// origin is user-configurable, so it is added to connect-src at runtime.
+function applyContentSecurityPolicy(): void {
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    void (async () => {
+      const settings = await readSettings().catch(() => defaultSettings())
+      const backendOrigin = (() => {
+        try {
+          return new URL(settings.backendApiUrl).origin
+        } catch {
+          return ''
+        }
+      })()
+
+      // Dev needs inline/eval + websocket for Vite HMR; prod is locked down.
+      const scriptSrc = isDev()
+        ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
+        : "script-src 'self'"
+      const connectSrc = [
+        "connect-src 'self'",
+        backendOrigin,
+        isDev() ? 'ws: http: https:' : '',
+      ]
+        .filter(Boolean)
+        .join(' ')
+
+      const policy = [
+        "default-src 'self'",
+        scriptSrc,
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: blob:",
+        "media-src 'self' blob:",
+        "font-src 'self' data:",
+        connectSrc,
+        "object-src 'none'",
+        "frame-src 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+      ].join('; ')
+
+      callback({
+        responseHeaders: {
+          ...details.responseHeaders,
+          'Content-Security-Policy': [policy],
+        },
+      })
+    })()
+  })
+}
+
 function createWindow(): void {
   const preloadPath = existsSync(join(__dirname, '../preload/index.mjs'))
     ? join(__dirname, '../preload/index.mjs')
@@ -508,9 +740,12 @@ function createWindow(): void {
       preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
+      webSecurity: true,
     },
   })
+
+  applyNavigationGuards(mainWindow)
 
   mainWindow.on('close', (event) => {
     if (!activeMeetingSession.active || allowCloseAfterConfirm) {
@@ -621,8 +856,17 @@ function registerIpc(): void {
   })
   ipcMain.handle('settings:get', () => readSettings())
   ipcMain.handle('settings:update', (_, payload) => writeSettings(payload))
-  ipcMain.handle('shell:open-file', async (_, path: string) => openPath(path))
-  ipcMain.handle('shell:open-directory', async (_, path: string) => openPath(path))
+  ipcMain.handle('shell:open-file', async (_, path: string) =>
+    openPath(await assertWithinSaveDirectory(path)),
+  )
+  ipcMain.handle('shell:open-directory', async (_, path: string) =>
+    openPath(await assertWithinSaveDirectory(path)),
+  )
+  ipcMain.handle('secure-store:get', (_, key: string) => getSecureItem(key))
+  ipcMain.handle('secure-store:set', (_, key: string, value: string) =>
+    setSecureItem(key, value),
+  )
+  ipcMain.handle('secure-store:remove', (_, key: string) => removeSecureItem(key))
   ipcMain.handle('permission:check-microphone', () => microphonePermission())
   ipcMain.handle('permission:check-screen', () => mediaPermission('screen'))
   ipcMain.handle(
@@ -662,6 +906,7 @@ function registerIpc(): void {
 
 app.whenReady().then(async () => {
   await ensureDirectory(companyBrainRoot())
+  applyContentSecurityPolicy()
   registerIpc()
   createWindow()
 

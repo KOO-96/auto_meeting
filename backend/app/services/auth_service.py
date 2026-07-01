@@ -3,6 +3,8 @@ from datetime import datetime, timedelta, timezone
 from fastapi import Request
 from sqlalchemy.orm import Session
 
+import logging
+
 from app.core.exceptions import bad_request
 from app.core.security import (
     create_access_token,
@@ -11,6 +13,11 @@ from app.core.security import (
     hash_token,
     verify_password,
 )
+
+logger = logging.getLogger(__name__)
+
+# Environments where a well-known seed admin may be auto-created for convenience.
+_SEED_ADMIN_ENVIRONMENTS = {"local", "development", "dev", "test"}
 from app.models.auth_session import AuthSession
 from app.models.user import User
 from app.repositories.auth_session_repository import AuthSessionRepository
@@ -50,6 +57,23 @@ class AuthService:
             self.sessions.revoke(session)
             self.db.commit()
 
+    def change_password(self, user: User, current_password: str, new_password: str) -> User:
+        if not verify_password(current_password, user.password_hash):
+            raise bad_request("Current password is incorrect.")
+        if len(new_password) < 8:
+            raise bad_request("New password must be at least 8 characters.")
+        if new_password == current_password:
+            raise bad_request("New password must differ from the current password.")
+
+        user.password_hash = hash_password(new_password)
+        user.must_change_password = False
+        # Invalidate all existing sessions so old refresh tokens cannot be reused.
+        for session in self.sessions.list_active_for_user(user.id):
+            self.sessions.revoke(session)
+        self.db.commit()
+        self.db.refresh(user)
+        return user
+
     def _issue_tokens(self, user: User, request: Request) -> tuple[User, str, str]:
         settings = get_settings()
         access_token = create_access_token(user.id)
@@ -71,6 +95,12 @@ class AuthService:
 
 
 def create_seed_admin(db: Session) -> None:
+    settings = get_settings()
+    if settings.app_env.strip().lower() not in _SEED_ADMIN_ENVIRONMENTS:
+        # Never auto-create a well-known admin outside dev/test environments.
+        logger.info("Skipping seed admin creation for app_env=%s", settings.app_env)
+        return
+
     users = UserRepository(db)
     if users.get_by_email("admin@company.local"):
         return
@@ -84,7 +114,13 @@ def create_seed_admin(db: Session) -> None:
             position="관리자",
             role="admin",
             is_active=True,
+            # Force rotation of the well-known seed password on first login.
+            must_change_password=True,
         )
     )
     db.commit()
+    logger.warning(
+        "Seed admin admin@company.local created with a default password. "
+        "It must be changed on first login (must_change_password=True)."
+    )
 

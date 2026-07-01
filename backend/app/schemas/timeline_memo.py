@@ -11,7 +11,6 @@ class TimelineMemoCreate(BaseModel):
     screen_elapsed_ms: int | None = None
     memo: str
     created_at: datetime | None = None
-    created_by: int | None = None
 
 
 class TimelineMemoUpdate(BaseModel):

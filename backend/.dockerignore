@@ -1,0 +1,24 @@
+# Secrets — never bake into the image
+.env
+*.env
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Local data / test artifacts
+*.db
+storage/uploads/*
+storage/exports/*
+storage/test_uploads/
+storage/test_exports/
+
+# VCS / tooling
+.git/
+.gitignore

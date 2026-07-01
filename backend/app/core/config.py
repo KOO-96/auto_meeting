@@ -1,8 +1,11 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Known placeholder values that must never be used to sign tokens.
+_INSECURE_JWT_SECRETS = {"change-me", "changeme", "secret", "please-change-me"}
 
 
 class Settings(BaseSettings):
@@ -14,7 +17,8 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/company_brain"
     redis_url: str = "redis://localhost:6379/0"
 
-    jwt_secret_key: str = Field(default="change-me", min_length=8)
+    # Required. No default: the app must fail fast if JWT_SECRET_KEY is unset.
+    jwt_secret_key: str = Field(min_length=16)
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 1440
     refresh_token_expire_days: int = 30
@@ -31,6 +35,16 @@ class Settings(BaseSettings):
     ai_model_temperature: float = 0.0
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
+    @field_validator("jwt_secret_key")
+    @classmethod
+    def _reject_insecure_secret(cls, value: str) -> str:
+        if value.strip().lower() in _INSECURE_JWT_SECRETS:
+            raise ValueError(
+                "JWT_SECRET_KEY is set to a known placeholder. "
+                "Generate a strong secret, e.g. `openssl rand -hex 32`."
+            )
+        return value
 
     @property
     def max_upload_size_bytes(self) -> int:

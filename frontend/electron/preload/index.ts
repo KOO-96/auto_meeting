@@ -54,6 +54,11 @@ const api: ElectronAPI = {
     ipcRenderer.invoke('export:save-binary', payload),
   setActiveMeetingSession: (payload: ActiveMeetingSessionPayload) =>
     ipcRenderer.invoke('app:set-active-meeting-session', payload),
+  getSecureItem: (key: string) => ipcRenderer.invoke('secure-store:get', key),
+  setSecureItem: (key: string, value: string) =>
+    ipcRenderer.invoke('secure-store:set', key, value),
+  removeSecureItem: (key: string) =>
+    ipcRenderer.invoke('secure-store:remove', key),
 }
 
 contextBridge.exposeInMainWorld('electronAPI', api)

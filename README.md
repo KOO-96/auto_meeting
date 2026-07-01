@@ -35,8 +35,12 @@ python 3.11
 ```bash
 cd auto_meeting/backend
 cp .env.example .env
+# Generate a strong JWT secret and write it into .env (required — startup fails otherwise)
+printf 'JWT_SECRET_KEY=%s\n' "$(openssl rand -hex 32)" >> .env
 docker compose up --build
 ```
+
+> `docker compose`는 이제 `.env`를 로드합니다(`.env.example`이 아님). `JWT_SECRET_KEY`가 비어 있거나 `change-me` 같은 placeholder이면 백엔드가 기동을 거부합니다.
 
 Backend health check:
 
