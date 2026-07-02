@@ -9,9 +9,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
+from fastapi.responses import PlainTextResponse
+
 from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging, request_id_var
+from app.core.observability import init_sentry
 from app.db.session import SessionLocal
 from app.queue.redis import get_redis
 
@@ -46,16 +49,12 @@ def _check_redis() -> bool:
 
 def create_app() -> FastAPI:
     configure_logging()
+    init_sentry()
     settings = get_settings()
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-            "http://localhost:4173",
-            "http://127.0.0.1:4173",
-        ],
+        allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -94,10 +93,10 @@ def create_app() -> FastAPI:
 
     @app.get("/health/live")
     def liveness() -> dict[str, str]:
+        # Liveness: the process is up. Does not touch dependencies.
         return {"status": "ok"}
 
-    @app.get("/health")
-    def health() -> JSONResponse:
+    def _readiness() -> tuple[bool, dict[str, str]]:
         settings = get_settings()
         db_ok = _check_database()
         redis_ok = _check_redis()
@@ -107,10 +106,41 @@ def create_app() -> FastAPI:
             "database": "ok" if db_ok else "down",
             "redis": "ok" if redis_ok else "down",
         }
+        return healthy, checks
+
+    def _readiness_response() -> JSONResponse:
+        healthy, checks = _readiness()
         return JSONResponse(
             status_code=200 if healthy else 503,
             content={"status": "ok" if healthy else "degraded", "checks": checks},
         )
+
+    @app.get("/health")
+    def health() -> JSONResponse:
+        return _readiness_response()
+
+    @app.get("/health/ready")
+    def readiness() -> JSONResponse:
+        # Readiness: dependencies reachable. Same deep check as /health.
+        return _readiness_response()
+
+    @app.get("/metrics")
+    def metrics() -> PlainTextResponse:
+        # Minimal Prometheus text exposition (no extra dependency).
+        healthy, checks = _readiness()
+        lines = [
+            "# HELP app_up Application liveness (always 1 while serving).",
+            "# TYPE app_up gauge",
+            "app_up 1",
+            "# HELP app_ready Application readiness (dependencies reachable).",
+            "# TYPE app_ready gauge",
+            f"app_ready {1 if healthy else 0}",
+            "# HELP app_dependency_up Per-dependency health (1=ok, 0=down).",
+            "# TYPE app_dependency_up gauge",
+            f'app_dependency_up{{dependency="database"}} {1 if checks["database"] == "ok" else 0}',
+            f'app_dependency_up{{dependency="redis"}} {1 if checks["redis"] == "ok" else 0}',
+        ]
+        return PlainTextResponse("\n".join(lines) + "\n")
 
     app.include_router(api_router)
     return app

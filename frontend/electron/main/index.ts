@@ -725,6 +725,28 @@ function applyContentSecurityPolicy(): void {
   })
 }
 
+// Modern screen capture: the renderer calls navigator.mediaDevices.getDisplayMedia(),
+// and this handler auto-selects the primary display (no system picker), replacing
+// the deprecated chromeMediaSource/getUserMedia constraint path.
+function registerDisplayMediaHandler(): void {
+  session.defaultSession.setDisplayMediaRequestHandler(
+    (_request, callback) => {
+      void desktopCapturer
+        .getSources({ types: ['screen'] })
+        .then((sources) => {
+          const primary = screen.getPrimaryDisplay()
+          const source =
+            sources.find((item) => item.display_id === String(primary.id)) ??
+            sources[0]
+          // An empty object denies the request (no screen available).
+          callback(source ? { video: source } : {})
+        })
+        .catch(() => callback({}))
+    },
+    { useSystemPicker: false },
+  )
+}
+
 function createWindow(): void {
   const preloadPath = existsSync(join(__dirname, '../preload/index.mjs'))
     ? join(__dirname, '../preload/index.mjs')
@@ -907,6 +929,7 @@ function registerIpc(): void {
 app.whenReady().then(async () => {
   await ensureDirectory(companyBrainRoot())
   applyContentSecurityPolicy()
+  registerDisplayMediaHandler()
   registerIpc()
   createWindow()
 

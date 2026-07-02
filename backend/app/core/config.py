@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     # Model client retry/backoff for transient upstream failures.
     ai_model_max_retries: int = 2
     ai_model_retry_backoff_seconds: float = 1.0
+    # Approximate input-token budget for the minutes prompt (conservative:
+    # estimated as 1 token per character, so this is a safe upper bound).
+    ai_model_context_tokens: int = 24000
 
     # Speech-to-text (OpenAI-compatible /audio/transcriptions). When
     # stt_base_url is unset, the pipeline uses a mock transcript.
@@ -54,6 +57,9 @@ class Settings(BaseSettings):
     stt_language: str | None = None
     stt_timeout_seconds: int = 300
     stt_max_retries: int = 2
+    # Split long recordings into N-second chunks before transcription
+    # (0 = disabled; requires ffmpeg). Tolerates per-chunk failures.
+    stt_chunk_seconds: int = 0
 
     # Screen-recording frame sampling for VLM analysis (requires ffmpeg on PATH).
     screen_frame_sampling_enabled: bool = True
@@ -66,6 +72,20 @@ class Settings(BaseSettings):
 
     # Structured JSON logs (recommended in non-local environments).
     json_logs: bool = False
+
+    # Comma-separated allowed CORS origins.
+    cors_allow_origins: str = (
+        "http://localhost:5173,http://127.0.0.1:5173,"
+        "http://localhost:4173,http://127.0.0.1:4173"
+    )
+
+    # Optional error tracking. When set (and sentry-sdk is installed), the app
+    # and worker initialize Sentry.
+    sentry_dsn: str | None = None
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_allow_origins.split(",") if origin.strip()]
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

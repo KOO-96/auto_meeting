@@ -2,6 +2,7 @@ import logging
 
 from sqlalchemy import select
 
+from app.core.logging import request_id_var
 from app.db.session import SessionLocal
 from app.models.enums import ProcessingJobStatus
 from app.models.meeting import Meeting
@@ -90,6 +91,9 @@ def _persist_progress(
 
 
 def run_meeting_pipeline(meeting_id: int) -> None:
+    # Tag every log line emitted during this job with the meeting id.
+    request_id_var.set(f"meeting:{meeting_id}")
+
     # --- Phase 1: load inputs and mark the run started (short session) ------
     with SessionLocal() as db:
         meeting = db.get(Meeting, meeting_id)
@@ -144,6 +148,7 @@ def run_meeting_pipeline(meeting_id: int) -> None:
                 meeting.id,
                 str(transcript.get("content") or ""),
                 transcript.get("segments") or [],
+                track=str(transcript.get("track") or "merged"),
             )
             for visual in agent.state.visual_results:
                 writer.save_visual_analysis(

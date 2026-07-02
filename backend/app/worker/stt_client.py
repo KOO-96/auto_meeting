@@ -1,6 +1,9 @@
 import json
 import logging
 import mimetypes
+import shutil
+import subprocess
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -8,6 +11,7 @@ from typing import Any
 from urllib import error, request
 
 from app.core.config import get_settings
+from app.worker.frame_sampler import ffmpeg_available
 
 logger = logging.getLogger(__name__)
 
@@ -70,13 +74,87 @@ def _error_transcript(audio_path: str | None, reason: str) -> dict:
 
 def _transcribe_remote(audio_path: str) -> dict:
     settings = get_settings()
+    if settings.stt_chunk_seconds > 0 and ffmpeg_available():
+        return _transcribe_chunked(audio_path, settings)
+
     endpoint = f"{settings.stt_base_url.rstrip('/')}/audio/transcriptions"
+    body = _transcribe_with_retry(endpoint, audio_path, _stt_fields(settings), settings)
+    return _normalize_transcription(body, audio_path)
+
+
+def _stt_fields(settings) -> dict[str, str]:
     fields = {"model": settings.stt_model, "response_format": "verbose_json"}
     if settings.stt_language:
         fields["language"] = settings.stt_language
+    return fields
 
-    body = _transcribe_with_retry(endpoint, audio_path, fields, settings)
-    return _normalize_transcription(body, audio_path)
+
+def _transcribe_chunked(audio_path: str, settings) -> dict:
+    """Split a long recording into fixed-length chunks and transcribe each.
+
+    Segment timestamps are offset back to absolute time. A failed chunk is
+    skipped (partial results) rather than failing the whole transcription.
+    """
+    endpoint = f"{settings.stt_base_url.rstrip('/')}/audio/transcriptions"
+    chunk_seconds = settings.stt_chunk_seconds
+    out_dir = tempfile.mkdtemp(prefix="cb_stt_")
+    suffix = Path(audio_path).suffix or ".webm"
+    pattern = str(Path(out_dir) / f"chunk_%03d{suffix}")
+
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-nostdin", "-loglevel", "error", "-i", audio_path,
+                "-f", "segment", "-segment_time", str(chunk_seconds), "-c", "copy",
+                pattern,
+            ],
+            capture_output=True,
+            timeout=settings.stt_timeout_seconds,
+            check=True,
+        )
+        chunks = sorted(Path(out_dir).glob(f"chunk_*{suffix}"))
+        if not chunks:
+            raise SttClientError("ffmpeg produced no audio chunks.")
+
+        merged_content: list[str] = []
+        merged_segments: list[dict] = []
+        succeeded = 0
+        for index, chunk in enumerate(chunks):
+            offset_ms = index * chunk_seconds * 1000
+            try:
+                body = _transcribe_with_retry(endpoint, str(chunk), _stt_fields(settings), settings)
+                normalized = _normalize_transcription(body, str(chunk))
+            except SttClientError as error_:
+                logger.warning("STT chunk %s failed (skipped): %s", index, error_)
+                continue
+            succeeded += 1
+            merged_content.append(normalized["content"])
+            merged_segments.extend(_offset_segments(normalized["segments"], offset_ms))
+
+        if succeeded == 0:
+            raise SttClientError("All STT chunks failed.")
+
+        return {
+            "status": "ready",
+            "is_mock": False,
+            "source_path": audio_path,
+            "content": " ".join(part for part in merged_content if part).strip(),
+            "segments": merged_segments,
+        }
+    finally:
+        shutil.rmtree(out_dir, ignore_errors=True)
+
+
+def _offset_segments(segments: list[dict], offset_ms: int) -> list[dict]:
+    offset: list[dict] = []
+    for segment in segments:
+        shifted = dict(segment)
+        if shifted.get("start_ms") is not None:
+            shifted["start_ms"] += offset_ms
+        if shifted.get("end_ms") is not None:
+            shifted["end_ms"] += offset_ms
+        offset.append(shifted)
+    return offset
 
 
 def _transcribe_with_retry(

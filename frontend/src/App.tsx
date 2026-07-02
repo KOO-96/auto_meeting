@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { ProtectedRoute } from '@/components/protected-route'
 import { useAuthStore } from '@/stores/auth-store'
+import { ChangePasswordPage } from '@/pages/change-password-page'
 import { DashboardPage } from '@/pages/dashboard-page'
 import { LoginPage } from '@/pages/login-page'
 import { MeetingCreatePage } from '@/pages/meeting-create-page'
@@ -39,6 +40,7 @@ function App(): React.JSX.Element {
       <HashRouter>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/change-password" element={<ChangePasswordPage />} />
           <Route element={<ProtectedRoute />}>
             <Route index element={<DashboardPage />} />
             <Route path="/meetings" element={<MeetingListPage />} />

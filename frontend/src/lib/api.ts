@@ -20,6 +20,7 @@ type BackendUser = {
   position?: string | null
   role: 'admin' | 'member'
   is_active?: boolean
+  must_change_password?: boolean
 }
 
 type BackendMeetingFile = {
@@ -95,20 +96,46 @@ type MeetingSeries = {
   description?: string | null
 }
 
-const syncedMemoClientIds = new Set<string>()
+// Track which memo client-ids have been persisted, scoped per meeting so the
+// map stays bounded and one meeting's ids never mask another's.
+const syncedMemoIdsByMeeting = new Map<number, Set<string>>()
+
+function syncedMemoIds(meetingId: number): Set<string> {
+  let set = syncedMemoIdsByMeeting.get(meetingId)
+  if (!set) {
+    set = new Set<string>()
+    syncedMemoIdsByMeeting.set(meetingId, set)
+  }
+  return set
+}
+
+const DEFAULT_BASE_URL = 'http://localhost:8000'
+const REQUEST_TIMEOUT_MS = 30_000
+
+// Cache the resolved base URL so every request doesn't pay an IPC + disk read.
+// Invalidated by the settings screen after the backend URL changes.
+let cachedBaseUrl: string | null = null
+
+export function invalidateApiBaseUrlCache(): void {
+  cachedBaseUrl = null
+}
 
 async function apiBaseUrl(): Promise<string> {
-  const electron = getElectronAPI()
+  if (cachedBaseUrl) {
+    return cachedBaseUrl
+  }
 
+  const electron = getElectronAPI()
   if (!electron) {
-    return 'http://localhost:8000'
+    return DEFAULT_BASE_URL
   }
 
   try {
     const settings = await electron.getAppSettings()
-    return settings.backendApiUrl.replace(/\/$/, '')
+    cachedBaseUrl = settings.backendApiUrl.replace(/\/$/, '')
+    return cachedBaseUrl
   } catch {
-    return 'http://localhost:8000'
+    return DEFAULT_BASE_URL
   }
 }
 
@@ -176,10 +203,32 @@ async function request<T>(
     headers.set('Authorization', `Bearer ${token}`)
   }
 
-  const response = await fetch(`${baseUrl}${path}`, {
-    ...options,
-    headers,
-  })
+  // Abort a hung request instead of leaving the promise pending forever.
+  // Respect a caller-provided signal if present.
+  const controller = options.signal ? null : new AbortController()
+  const timeout = controller
+    ? setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+    : null
+
+  let response: Response
+  try {
+    response = await fetch(`${baseUrl}${path}`, {
+      ...options,
+      headers,
+      signal: options.signal ?? controller?.signal,
+    })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('요청 시간이 초과되었습니다. 백엔드 연결을 확인하세요.', {
+        cause: error,
+      })
+    }
+    throw error
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout)
+    }
+  }
 
   if (response.status === 401) {
     // Try a one-time silent refresh, then replay the original request. Skip for
@@ -224,6 +273,7 @@ function mapUser(user: BackendUser): User {
     department: user.department ?? null,
     position: user.position ?? null,
     role: user.role,
+    mustChangePassword: user.must_change_password ?? false,
   }
 }
 
@@ -469,6 +519,20 @@ export const authApi = {
       body: JSON.stringify({ refresh_token: refreshToken ?? null }),
     })
   },
+
+  async changePassword(payload: {
+    currentPassword: string
+    newPassword: string
+  }): Promise<User> {
+    const user = await request<BackendUser>('/api/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({
+        current_password: payload.currentPassword,
+        new_password: payload.newPassword,
+      }),
+    })
+    return mapUser(user)
+  },
 }
 
 export const participantsApi = {
@@ -677,9 +741,12 @@ export const meetingsApi = {
   },
 
   async saveMemos(id: number, memos: TimelineMemo[]): Promise<TimelineMemo[]> {
-    const unsynced = memos.filter((memo) => !syncedMemoClientIds.has(memo.id))
+    const synced = syncedMemoIds(id)
+    const unsynced = memos.filter((memo) => !synced.has(memo.id))
 
-    await Promise.all(
+    // Persist each memo independently; mark ONLY the ones that succeed so a
+    // partial failure leaves the rest to be retried on the next save.
+    const results = await Promise.allSettled(
       unsynced.map((memo) =>
         request(`/api/meetings/${id}/memos`, {
           method: 'POST',
@@ -688,13 +755,21 @@ export const meetingsApi = {
             audio_elapsed_ms: memo.audio_elapsed_ms,
             screen_elapsed_ms: memo.screen_elapsed_ms,
             memo: memo.memo,
-            created_by: memo.created_by,
             created_at: memo.created_at,
           }),
         }),
       ),
     )
-    unsynced.forEach((memo) => syncedMemoClientIds.add(memo.id))
+    results.forEach((result, index) => {
+      if (result.status === 'fulfilled') {
+        synced.add(unsynced[index].id)
+      }
+    })
+
+    const failed = results.filter((result) => result.status === 'rejected')
+    if (failed.length > 0) {
+      throw new Error(`메모 ${failed.length}건 저장에 실패했습니다.`)
+    }
     return this.getMemos(id)
   },
 
@@ -712,8 +787,9 @@ export const meetingsApi = {
       }>
     >(`/api/meetings/${id}/memos`)
 
+    const synced = syncedMemoIds(id)
     return memos.map((memo) => {
-      syncedMemoClientIds.add(String(memo.id))
+      synced.add(String(memo.id))
       return {
         id: String(memo.id),
         meeting_id: memo.meeting_id,

@@ -9,6 +9,11 @@ export function ProtectedRoute(): React.JSX.Element {
     return <Navigate to="/login" replace />
   }
 
+  // Force initial password rotation before granting access to the app.
+  if (user.mustChangePassword) {
+    return <Navigate to="/change-password" replace />
+  }
+
   return <AppShell />
 }
 

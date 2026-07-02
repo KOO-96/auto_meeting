@@ -72,7 +72,13 @@ export function MeetingDetailPage(): React.JSX.Element {
   const queryClient = useQueryClient()
   const user = useAuthStore((state) => state.user)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const [message, setMessage] = useState<string | null>(null)
+  const [message, setMessageState] = useState<string | null>(null)
+  const [messageTone, setMessageTone] = useState<'success' | 'error'>('success')
+  // Success by default; error handlers pass 'error' so the banner styles correctly.
+  const setMessage = (text: string, tone: 'success' | 'error' = 'success'): void => {
+    setMessageState(text)
+    setMessageTone(tone)
+  }
   const [uploadFileType, setUploadFileType] =
     useState<BackendUploadFileType>('audio')
   const meetingQuery = useQuery({
@@ -110,9 +116,8 @@ export function MeetingDetailPage(): React.JSX.Element {
     },
     onError: (error) => {
       setMessage(
-        error instanceof Error
-          ? error.message
-          : 'AI 처리 요청에 실패했습니다.',
+        error instanceof Error ? error.message : 'AI 처리 요청에 실패했습니다.',
+        'error',
       )
     },
   })
@@ -138,6 +143,7 @@ export function MeetingDetailPage(): React.JSX.Element {
     onError: (error) => {
       setMessage(
         error instanceof Error ? error.message : '파일 업로드에 실패했습니다.',
+        'error',
       )
     },
   })
@@ -150,6 +156,7 @@ export function MeetingDetailPage(): React.JSX.Element {
     onError: (error) => {
       setMessage(
         error instanceof Error ? error.message : '파일 다운로드에 실패했습니다.',
+        'error',
       )
     },
   })
@@ -162,6 +169,7 @@ export function MeetingDetailPage(): React.JSX.Element {
     onError: (error) => {
       setMessage(
         error instanceof Error ? error.message : 'Export 생성에 실패했습니다.',
+        'error',
       )
     },
   })
@@ -250,7 +258,13 @@ export function MeetingDetailPage(): React.JSX.Element {
       />
 
       {message ? (
-        <p className="mb-4 rounded-md bg-success/10 px-3 py-2 text-sm text-success">
+        <p
+          className={
+            messageTone === 'error'
+              ? 'mb-4 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive'
+              : 'mb-4 rounded-md bg-success/10 px-3 py-2 text-sm text-success'
+          }
+        >
           {message}
         </p>
       ) : null}
@@ -401,8 +415,8 @@ export function MeetingDetailPage(): React.JSX.Element {
                   <section>
                     <p className="mb-2 text-sm text-muted-foreground">키워드</p>
                     <div className="flex flex-wrap gap-2">
-                      {result.keywords.map((keyword) => (
-                        <Badge key={keyword}>{keyword}</Badge>
+                      {result.keywords.map((keyword, index) => (
+                        <Badge key={index}>{keyword}</Badge>
                       ))}
                     </div>
                   </section>
@@ -411,16 +425,16 @@ export function MeetingDetailPage(): React.JSX.Element {
                     <section className="rounded-lg border border-border p-4">
                       <p className="mb-3 text-sm font-semibold">결정사항</p>
                       <div className="space-y-2 text-sm">
-                        {result.decisions.map((decision) => (
-                          <p key={decision.content}>• {decision.content}</p>
+                        {result.decisions.map((decision, index) => (
+                          <p key={index}>• {decision.content}</p>
                         ))}
                       </div>
                     </section>
                     <section className="rounded-lg border border-border p-4">
                       <p className="mb-3 text-sm font-semibold">액션아이템</p>
                       <div className="space-y-3 text-sm">
-                        {result.action_items.map((item) => (
-                          <div key={item.content}>
+                        {result.action_items.map((item, index) => (
+                          <div key={index}>
                             <p className="font-medium">{item.content}</p>
                             <p className="text-xs text-muted-foreground">
                               담당 {item.assignee ?? '-'} · 기한{' '}
@@ -437,16 +451,16 @@ export function MeetingDetailPage(): React.JSX.Element {
                     <section className="rounded-lg border border-warning/30 bg-warning/10 p-4">
                       <p className="mb-3 text-sm font-semibold">미결정 안건</p>
                       <div className="space-y-2 text-sm">
-                        {result.open_issues.map((issue) => (
-                          <p key={issue}>• {issue}</p>
+                        {result.open_issues.map((issue, index) => (
+                          <p key={index}>• {issue}</p>
                         ))}
                       </div>
                     </section>
                     <section className="rounded-lg border border-destructive/30 bg-destructive/10 p-4">
                       <p className="mb-3 text-sm font-semibold">리스크</p>
                       <div className="space-y-2 text-sm">
-                        {result.risks.map((risk) => (
-                          <p key={risk}>• {risk}</p>
+                        {result.risks.map((risk, index) => (
+                          <p key={index}>• {risk}</p>
                         ))}
                       </div>
                     </section>
@@ -458,8 +472,8 @@ export function MeetingDetailPage(): React.JSX.Element {
                         다음 회의 안건
                       </p>
                       <div className="space-y-2 text-sm">
-                        {result.next_agenda.map((item) => (
-                          <p key={item}>• {item}</p>
+                        {result.next_agenda.map((item, index) => (
+                          <p key={index}>• {item}</p>
                         ))}
                       </div>
                     </section>
@@ -468,8 +482,8 @@ export function MeetingDetailPage(): React.JSX.Element {
                         다음 회의 결정사항
                       </p>
                       <div className="space-y-2 text-sm">
-                        {result.next_decision_items.map((item) => (
-                          <p key={item}>• {item}</p>
+                        {result.next_decision_items.map((item, index) => (
+                          <p key={index}>• {item}</p>
                         ))}
                       </div>
                     </section>

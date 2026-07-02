@@ -14,6 +14,7 @@ type AuthState = {
     refreshToken: string
   }) => void
   logout: () => void
+  setUser: (user: User) => void
   setHasHydrated: (value: boolean) => void
 }
 
@@ -57,6 +58,9 @@ export const useAuthStore = create<AuthState>()(
       },
       logout: () => {
         set({ user: null, accessToken: null, refreshToken: null })
+      },
+      setUser: (user) => {
+        set({ user })
       },
       setHasHydrated: (value) => {
         set({ hasHydrated: value })

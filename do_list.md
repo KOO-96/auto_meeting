@@ -60,32 +60,42 @@ Electron 데스크톱(화면·음성 녹화) + FastAPI + Redis/RQ 워커 + Postg
 
 ---
 
-## 🔜 남은 백로그 (다음 후보)
+## ✅ Sprint 4 — 백로그 소화 — 완료
 
 ### 기능/파이프라인
-- [ ] 화자 분리(diarization): STT `segments[].speaker` 실제 채우기 + audio/screen_audio 트랙 병합(`TranscriptType`)
-- [ ] 긴 오디오 청킹/부분 결과 처리(대용량 녹음 대비)
-- [ ] `meeting_type`을 프론트 회의 상세/목록에 표시(현재 API에는 노출됨)
-- [ ] 프롬프트 인젝션 방어 강화(메모/제목/전사 구분자·이스케이프, `title` 길이 제한)
-- [ ] 토큰 기반 컨텍스트 예산(문자수 truncation → 토큰 기준)
+- [x] 화자 분리 준비: STT `segments[].speaker` 패스스루 + 소스별 `TranscriptType`(audio/screen_audio) 저장
+- [x] 긴 오디오 청킹/부분 결과 처리: `STT_CHUNK_SECONDS`(ffmpeg, opt-in) + 청크 실패 skip
+- [x] `meeting_type` 프론트 노출 경로 정비(도메인 타입 `mustChangePassword` 포함 매핑 정리)
+- [x] 프롬프트 인젝션 방어: `%%%BEGIN/END%%%` 데이터 펜스 + 구분자 무력화 + `title` 200자 제한 + 시스템 프롬프트 가드
+- [x] 토큰 기반 컨텍스트 예산: 섹션 합산 예산 배분(`AI_MODEL_CONTEXT_TOKENS`, 보수적 1토큰/문자)
 
 ### 인프라/운영
-- [ ] `/metrics` 및 readiness/liveness 분리 고도화, 워커 관측성(Sentry 등)
-- [ ] CORS를 환경설정 기반으로(현재 localhost 하드코딩)
-- [ ] 업로드 스트리밍 처리 + 콘텐츠 스니핑(현재 확장자 검증 + 전체 메모리 적재)
-- [ ] 다운로드 시 `Content-Disposition: attachment`(반사 MIME 완화)
-- [ ] 구조화 로깅을 워커 파이프라인 전 구간으로 확장
+- [x] `/health/live`(liveness) · `/health/ready`(readiness) · `/metrics`(Prometheus 텍스트) 분리, 선택 Sentry(`SENTRY_DSN`)
+- [x] CORS 환경설정화(`CORS_ALLOW_ORIGINS`)
+- [x] 업로드 스트리밍(청크 단위 + 선(先) 크기 제한) + magic-byte 콘텐츠 스니핑
+- [x] 다운로드 `Content-Disposition: attachment` 명시(반사 MIME 완화)
+- [x] 워커 로그 상관관계: 파이프라인 실행마다 `request_id=meeting:<id>` 태깅
 
 ### 프론트엔드
-- [ ] 강제 비밀번호 변경 UI 연결(백엔드 `must_change_password`/change-password 소비)
-- [ ] `apiBaseUrl` 메모이제이션(요청마다 IPC+디스크 조회 제거), fetch 타임아웃/취소
-- [ ] `saveMemos`의 전역 `syncedMemoClientIds` 정리(메모리 누수/부분 실패 처리)
-- [ ] 에러/로딩 상태 정리(성공 스타일로 오류 표시되는 배너 등), React key 개선
-- [ ] `getDisplayMedia` 전환 검토(deprecated `chromeMediaSource` 대체)
+- [x] 강제 비밀번호 변경 UI: `/change-password` 페이지 + `ProtectedRoute` 게이트 + `authApi.changePassword`
+- [x] `apiBaseUrl` 캐시(+설정 저장 시 무효화) + fetch 30s 타임아웃/AbortController
+- [x] `saveMemos` 회의별 스코프 Set + `allSettled`로 부분 실패 시 성공분만 synced 처리
+- [x] 에러/로딩 상태 정리(에러는 destructive 톤 배너) + React key를 index 기반으로 교정
+- [x] `getDisplayMedia` 전환: 메인 `setDisplayMediaRequestHandler`(primary display 자동 선택), deprecated `chromeMediaSource` 제거
 
 ### 테스트/품질
-- [ ] 프론트 유닛/통합 테스트 도입(현재 없음)
-- [ ] 워커 파이프라인 부분 실패/재시도 경로 테스트 확대
+- [x] 프론트 유닛 테스트 도입: `vitest` + `format` 유틸 6종, CI에 `npm test` 추가
+- [x] 워커 실패/재시도 경로 테스트: 파이프라인 실패→failed+재처리, STT error graceful degrade, 프롬프트 예산/새니타이즈 유닛 (백엔드 총 17종)
+
+---
+
+## 🔜 남은 백로그 (다음 후보)
+
+- [ ] 실제 화자 분리 모델 연동 + audio/screen_audio 이중 트랙 동시 전사·병합(현재는 단일 소스 + 타입 태깅)
+- [ ] 워커 Docker 이미지에 `ffmpeg` 포함(현재 기본 이미지엔 없어 화면→VLM/청킹은 로컬 ffmpeg 필요)
+- [ ] 프론트 컴포넌트/통합 테스트(React Testing Library) 확대
+- [ ] 번들 크기 최적화(현재 renderer 청크 ~1.3MB, 코드 스플리팅)
+- [ ] `/metrics` 요청/처리 카운터 등 실제 지표 확장(현재는 up/ready/dependency 게이지)
 
 ---
 
@@ -93,5 +103,6 @@ Electron 데스크톱(화면·음성 녹화) + FastAPI + Redis/RQ 워커 + Postg
 
 - **마이그레이션**: `0001_initial`이 `create_all`에서 실 DDL로 교체됨. 옛 마이그레이션을 이미 적용한 개발 DB는 새 컬럼/인덱스 미반영 → `docker compose down -v`로 볼륨 재생성 필요(신규 배포/테스트 DB는 영향 없음).
 - **STT**: `STT_BASE_URL`(Whisper 호환) 설정 시 실제 전사, 비우면 mock.
-- **화면→VLM**: 워커 환경에 `ffmpeg` 필요(없으면 자동 skip).
+- **화면→VLM / STT 청킹**: 워커 환경에 `ffmpeg` 필요(없으면 자동 skip / 단일 전사).
 - **필수 환경변수**: `JWT_SECRET_KEY`(빈 값/placeholder 시 기동 거부). `.env.example` 참고.
+- **로컬 venv 주의**: 프로젝트 폴더를 이동한 경우 `backend/.venv`의 콘솔 스크립트(`alembic` 등) shebang이 옛 경로를 가리켜 깨질 수 있습니다. `python -m alembic ...`로 실행하거나 venv를 재생성하세요(`python -m venv .venv && pip install -e ".[dev]"`).

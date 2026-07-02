@@ -9,6 +9,7 @@ export type User = {
   department?: string | null
   position?: string | null
   role: UserRole
+  mustChangePassword?: boolean
 }
 
 export type Participant = User

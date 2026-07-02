@@ -44,10 +44,13 @@ def download_file(
     current_user: Annotated[User, Depends(get_current_user)],
 ):
     file = FileService(db).get_download_file(meeting_id, file_id, current_user)
+    # Force download (attachment) so a client-supplied MIME type can never be
+    # rendered inline in a browser context.
     return FileResponse(
         file.storage_path,
-        media_type=file.mime_type,
+        media_type=file.mime_type or "application/octet-stream",
         filename=file.original_filename or Path(file.storage_path).name,
+        content_disposition_type="attachment",
     )
 
 

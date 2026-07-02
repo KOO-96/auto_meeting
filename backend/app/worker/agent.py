@@ -185,10 +185,18 @@ class MeetingAgent:
         }
 
     def process_audio(self, state: AgentGraphState) -> AgentGraphState:
-        audio_path = self.first_path(state.get("audio_files", [])) or self.first_path(
-            state.get("screen_files", []),
-        )
+        # Prefer a dedicated audio file; fall back to the screen recording's
+        # audio. Tag the transcript with its source track so it is persisted
+        # with the correct TranscriptType (audio vs screen_audio).
+        audio_path = self.first_path(state.get("audio_files", []))
+        if audio_path:
+            track = "audio"
+        else:
+            audio_path = self.first_path(state.get("screen_files", []))
+            track = "screen_audio" if audio_path else "audio"
+
         transcript = transcribe_audio(audio_path)
+        transcript["track"] = track
         status = transcript.get("status")
 
         if status in {"mock", "developing", "error"}:

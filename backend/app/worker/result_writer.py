@@ -51,11 +51,22 @@ class ResultWriter:
             job.started_at = datetime.now(timezone.utc)
         self.db.commit()
 
-    def save_transcript(self, meeting_id: int, content: str, segments: list[dict]) -> None:
+    def save_transcript(
+        self,
+        meeting_id: int,
+        content: str,
+        segments: list[dict],
+        track: str = "merged",
+    ) -> None:
+        try:
+            transcript_type = TranscriptType(track)
+        except ValueError:
+            transcript_type = TranscriptType.merged
+
         self.db.add(
             MeetingTranscript(
                 meeting_id=meeting_id,
-                transcript_type=TranscriptType.merged,
+                transcript_type=transcript_type,
                 content=content,
                 segments=segments,
             )

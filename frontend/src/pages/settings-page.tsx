@@ -11,6 +11,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { invalidateApiBaseUrlCache } from '@/lib/api'
 import { getElectronAPI } from '@/lib/electron'
 import type { AppSettings } from '@/types/electron'
 
@@ -75,6 +76,9 @@ export function SettingsPage(): React.JSX.Element {
     try {
       const next = await electron.updateAppSettings(settings)
       setSettings(next)
+      // Backend URL may have changed; drop the cached value so the next
+      // request re-reads it.
+      invalidateApiBaseUrlCache()
       setMessage('설정이 저장되었습니다.')
     } catch (error) {
       setMessage(

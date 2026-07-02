@@ -256,15 +256,12 @@ export function MeetingSessionPage(): React.JSX.Element {
         throw new Error(permissionMessage('screen'))
       }
 
-      const source = await electron.getPrimaryScreenSource()
-      screenStream = await navigator.mediaDevices.getUserMedia({
+      // Screen video via the modern getDisplayMedia API (the Electron main
+      // process auto-selects the primary display). Microphone audio is
+      // captured separately and mixed in below.
+      screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
         audio: false,
-        video: {
-          mandatory: {
-            chromeMediaSource: 'desktop',
-            chromeMediaSourceId: source.id,
-          },
-        } as unknown as MediaTrackConstraints,
       })
       microphoneStream = await navigator.mediaDevices.getUserMedia({
         audio: true,

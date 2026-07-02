@@ -50,5 +50,6 @@ def download_export(
     return FileResponse(
         export.storage_path,
         filename=Path(export.storage_path).name,
+        content_disposition_type="attachment",
     )
 
