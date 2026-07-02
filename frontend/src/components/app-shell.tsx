@@ -126,14 +126,11 @@ export function AppShell(): React.JSX.Element {
       </aside>
 
       <main className="min-w-0 flex-1">
-        <header className="flex h-16 items-center justify-between border-b border-border bg-card/95 px-6 shadow-[0_1px_0_rgba(16,24,40,0.03)]">
+        <header className="flex h-16 items-center border-b border-border bg-card/95 px-6 shadow-[0_1px_0_rgba(16,24,40,0.03)]">
           <div className="flex items-center gap-3 rounded-md border border-border bg-background px-3 py-2 text-sm text-muted-foreground">
             <Search className="h-4 w-4" />
             회의록 화면에서 제목, 프로젝트, 참석자를 검색합니다.
           </div>
-          <Button type="button" onClick={() => navigate('/meetings/new')}>
-            <Plus className="h-4 w-4" />새 회의 시작
-          </Button>
         </header>
         <div className="mx-auto max-w-7xl px-6 py-6">
           <Outlet />
